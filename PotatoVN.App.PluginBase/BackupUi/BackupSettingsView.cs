@@ -15,6 +15,7 @@ namespace PotatoVN.App.PluginBase.BackupUi;
 public sealed partial class BackupSettingsView : UserControl
 {
     private readonly IBackupUiController _controller;
+    private readonly Func<IntPtr>? _getWindowHandle;
     private readonly List<Control> _operationControls = new();
     private readonly List<Control> _configurationTabs = new();
     private readonly TextBlock _status = Note("");
@@ -23,7 +24,7 @@ public sealed partial class BackupSettingsView : UserControl
     private readonly InfoBar _feedback = new() { IsClosable = true };
     private readonly ProgressBar _progress = new() { IsIndeterminate = true, Visibility = Visibility.Collapsed };
     private readonly Button _cancel = new() { Content = "取消操作", Visibility = Visibility.Collapsed };
-    private readonly ComboBox _navigation = new() { HorizontalAlignment = HorizontalAlignment.Stretch, MaxWidth = 400 };
+    private readonly Pivot _navigation = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ScrollViewer _pageScroll = new()
     {
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
@@ -45,9 +46,10 @@ public sealed partial class BackupSettingsView : UserControl
     private bool _operationDismissed;
     private string? _lastStatus;
 
-    public BackupSettingsView(IBackupUiController controller)
+    public BackupSettingsView(IBackupUiController controller, Func<IntPtr>? getWindowHandle = null)
     {
         _controller = controller;
+        _getWindowHandle = getWindowHandle;
         var root = new Grid { Padding = new Thickness(16), RowSpacing = 10, MaxWidth = 1040, HorizontalAlignment = HorizontalAlignment.Stretch };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -61,11 +63,8 @@ public sealed partial class BackupSettingsView : UserControl
         AutomationProperties.SetName(_navigation, "设置页面");
         AutomationProperties.SetName(_pageScroll, "设置内容");
         AutomationProperties.SetName(_feedback, "操作结果");
-        var navigationRow = Row();
-        navigationRow.Children.Add(_navigation);
-        navigationRow.Children.Add(Note("首次使用：连接云盘 → 选择备份内容 → 立即备份"));
-        Grid.SetRow(navigationRow, 1);
-        root.Children.Add(navigationRow);
+        Grid.SetRow(_navigation, 1);
+        root.Children.Add(_navigation);
         AddPage("连接云盘", BuildProfilesTab(), true);
         AddPage("备份内容", BuildContentTab(), true);
         AddPage("自动备份", BuildAutomationTab(), true);
@@ -74,13 +73,15 @@ public sealed partial class BackupSettingsView : UserControl
         AddPage("游戏库关联", BuildLibraryTab(), true);
         _navigation.SelectionChanged += (_, _) =>
         {
-            if (Choice(_navigation) is int index)
+            int index = _navigation.SelectedIndex;
+            if (index >= 0 && index < _pages.Count)
             {
                 _pageScroll.Content = _pages[index];
                 _pageScroll.ChangeView(null, 0, null, true);
             }
         };
         _navigation.SelectedIndex = 0;
+        _pageScroll.Content = _pages[0];
         Grid.SetRow(_pageScroll, 2);
         root.Children.Add(_pageScroll);
 
@@ -129,7 +130,11 @@ public sealed partial class BackupSettingsView : UserControl
     {
         panel.MaxWidth = 860;
         panel.HorizontalAlignment = HorizontalAlignment.Stretch;
-        AddChoice(_navigation, _pages.Count, title);
+        _navigation.Items.Add(new PivotItem
+        {
+            Header = new TextBlock { Text = title, FontSize = 16 },
+            Tag = _pages.Count
+        });
         _pages.Add(panel);
         // All configuration editors are frozen while a backup or restore is running.
         if (configuration)

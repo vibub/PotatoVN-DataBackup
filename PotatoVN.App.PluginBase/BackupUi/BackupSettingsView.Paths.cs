@@ -10,9 +10,10 @@ public sealed partial class BackupSettingsView
 {
     private async Task<string?> PickPathAsync(bool file = false)
     {
-        if (XamlRoot?.ContentIslandEnvironment is not { } environment)
-            throw new InvalidOperationException("窗口尚未准备好，请稍后再选择路径。");
-        IntPtr handle = Microsoft.UI.Win32Interop.GetWindowFromWindowId(environment.AppWindowId);
+        // Use the host's actual Window. XamlRoot.ContentIslandEnvironment is absent in older hosts.
+        IntPtr handle = _getWindowHandle?.Invoke() ?? IntPtr.Zero;
+        if (handle == IntPtr.Zero)
+            throw new InvalidOperationException("未能取得主窗口，请重新打开云备份页面后再选择路径。");
         if (file)
         {
             var picker = new FileOpenPicker();

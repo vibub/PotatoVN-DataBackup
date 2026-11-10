@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -88,10 +88,20 @@ public sealed class PotatoHostAdapter : IBackupHost
         }).ToList();
     }).GetAwaiter().GetResult();
 
-    public string? GetSuggestedSavePath(Guid gameId) => OnMainAsync(() =>
+    public string? GetSuggestedSavePath(Guid gameId) => GetSuggestedSavePaths(gameId).FirstOrDefault();
+
+    public IReadOnlyList<string> GetSuggestedSavePaths(Guid gameId) => OnMainAsync(() =>
     {
         Galgame? game = _api.GetAllGames().FirstOrDefault(g => g.Uuid == gameId);
-        return game?.DetectedSavePath?.ToPath() ?? game?.SavePath;
+        if (game == null) return (IReadOnlyList<string>)Array.Empty<string>();
+        // 检测结果失效时仍检查宿主保存的手动/同步位置，不将安装根目录当作存档。
+        var candidates = new[] { game.DetectedSavePath?.ToPath(), game.SavePath };
+        string? installation = string.IsNullOrWhiteSpace(game.LocalPath) ? null : Path.TrimEndingDirectorySeparator(Path.GetFullPath(game.LocalPath));
+        return (IReadOnlyList<string>)candidates.Where(path => !string.IsNullOrWhiteSpace(path) && Path.IsPathFullyQualified(path) &&
+                (File.Exists(path) || Directory.Exists(path)))
+            .Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path!)))
+            .Where(path => !string.Equals(path, installation, StringComparison.OrdinalIgnoreCase))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }).GetAwaiter().GetResult();
 
     public async Task<HostExport> ExportAsync(string workDirectory, CancellationToken cancellationToken)

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -44,7 +44,6 @@ public sealed class BackupController : IBackupUiController, IDisposable
         _secrets = new DpapiSecretStore(Path.Combine(host.StateRoot, "secrets"));
         _coordinator = new BackupCoordinator(host.StateRoot, host, settings, store, pending, p => BackupProviderFactory.Create(p, _secrets));
         _coordinator.Progress += text => { Status = text; Changed(); };
-        AddSuggestedLocations();
         Changed();
         _ = WatchAsync();
     }
@@ -220,17 +219,34 @@ public sealed class BackupController : IBackupUiController, IDisposable
         finally { _current = null; IsBusy = false; _gate.Release(); Changed(); }
     }
 
-    private void AddSuggestedLocations()
+    public IReadOnlyList<SavePathSuggestion> GetSavePathSuggestions(Guid gameId)
     {
-        foreach (GameIdentity game in GetGames())
+        GameIdentity? game = GetGames().FirstOrDefault(item => item.Id == gameId);
+        if (game == null) return Array.Empty<SavePathSuggestion>();
+        var candidates = new List<SavePathSuggestion>();
+        void AddCandidate(string path, string source)
         {
-            if (Settings.SaveConfigs.Any(c => c.GameId == game.Id)) continue;
-            string? suggestion = _host.GetSuggestedSavePath(game.Id);
-            if (suggestion == null || (!File.Exists(suggestion) && !Directory.Exists(suggestion))) continue;
-            SaveLocation location = SaveArchiveService.Describe(suggestion, game.LocalDirectory, File.Exists(suggestion));
-            Settings.SaveConfigs.Add(new GameSaveConfig { GameId = game.Id, Locations = [location] });
-            if (location.CustomPath != null) Settings.CustomSavePaths[location.Id] = location.CustomPath;
+            if (!Path.IsPathFullyQualified(path) || (!File.Exists(path) && !Directory.Exists(path))) return;
+            string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+            string[] protectedRoots = [Path.GetPathRoot(full) ?? "", game.LocalDirectory ?? "",
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                Path.Combine(Path.GetDirectoryName(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData))!, "LocalLow"),
+                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86)];
+            if (protectedRoots.Where(root => !string.IsNullOrWhiteSpace(root)).Any(root =>
+                    string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(root)), full, StringComparison.OrdinalIgnoreCase))) return;
+            if (candidates.Any(candidate => string.Equals(candidate.Path, full, StringComparison.OrdinalIgnoreCase))) return;
+            candidates.Add(new SavePathSuggestion(full, File.Exists(full), source));
         }
+        foreach (string path in _host.GetSuggestedSavePaths(gameId)) AddCandidate(path, "PotatoVN 提供的存档位置");
+        // 仅核对直接名为 save 的子文件夹，不扫描游戏文件，不自动加入备份。
+        if (!string.IsNullOrWhiteSpace(game.LocalDirectory) && Directory.Exists(game.LocalDirectory))
+            AddCandidate(Path.Combine(game.LocalDirectory, "save"), "游戏安装目录内的 save 文件夹（请确认）");
+        return candidates;
     }
 
     public void ScheduleGameExit()

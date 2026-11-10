@@ -5,6 +5,7 @@ using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Automation.Provider;
 using System.Reflection;
+using System.Text.Json;
 using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -19,6 +20,7 @@ namespace UiSmoke;
 internal static class Program
 {
     public static string Output => Path.GetFullPath(Environment.GetEnvironmentVariable("POTATOVN_UI_SMOKE_OUTPUT") ?? Path.Combine(AppContext.BaseDirectory, "screenshots"));
+    public static bool Interactive => Environment.GetEnvironmentVariable("POTATOVN_UI_SMOKE_INTERACTIVE") == "1" || Environment.GetCommandLineArgs().Contains("--interactive");
     [STAThread]
     public static void Main()
     {
@@ -47,7 +49,7 @@ public sealed partial class SmokeApp : Application
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
         var controller = new DemoController();
-        var view = new BackupSettingsView(controller);
+        var view = new BackupSettingsView(controller, () => WinRT.Interop.WindowNative.GetWindowHandle(_window!));
         // 模拟插件管理页：宿主标题占据一部分高度，设置控件位于外层滚动容器中。
         var host = new Grid { RequestedTheme = ElementTheme.Light, Background = new SolidColorBrush(Microsoft.UI.Colors.White) };
         host.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -74,11 +76,26 @@ public sealed partial class SmokeApp : Application
         {
             if (started) return;
             started = true;
+            if (Program.Interactive)
+            {
+                await Task.Delay(400);
+                double scale = host.XamlRoot.RasterizationScale;
+                _window.AppWindow.Resize(new Windows.Graphics.SizeInt32((int)(1080 * scale), (int)(760 * scale)));
+                Pivot pages = FindAll<Pivot>(view).Single(pivot => AutomationProperties.GetName(pivot) == "设置页面");
+                pages.SelectedIndex = 1;
+                await Task.Delay(200);
+                ScrollViewer content = FindAll<ScrollViewer>(view).Single(scroll => AutomationProperties.GetName(scroll) == "设置内容");
+                content.ChangeView(null, content.ScrollableHeight, null, true);
+                File.WriteAllLines(Path.Combine(Program.Output, "interactive-ready.txt"),
+                    ["Interactive synthetic picker check is ready.", "Synthetic game root: " + controller.GetGames()[0].LocalDirectory,
+                    "Synthetic save folder: " + Path.Combine(controller.GetGames()[0].LocalDirectory!, "save")]);
+                return;
+            }
             List<string> results = [];
             try
             {
                 await Task.Delay(700);
-                ComboBox navigation = FindAll<ComboBox>(view).Single(combo => AutomationProperties.GetName(combo) == "设置页面");
+                Pivot navigation = FindAll<Pivot>(view).Single(pivot => AutomationProperties.GetName(pivot) == "设置页面");
                 Check(navigation.Items.Count == 6, "应能通过固定导航访问全部六个设置页面。");
                 foreach (var size in new[] { (Width: 1080, Height: 760), (Width: 760, Height: 620), (Width: 620, Height: 540) })
                 {
@@ -111,7 +128,7 @@ public sealed partial class SmokeApp : Application
                         Check(Math.Abs(PositionY(navigation, hostScroll) - navigationY) < 1 && Math.Abs(PositionY(save, hostScroll) - actionY) < 1,
                             "滚动设置内容时移动了固定导航或底部操作。");
                         await CaptureAsync(host, $"settings-{size.Width}x{size.Height}-page-{index}.png");
-                        string page = (navigation.Items[index] as ComboBoxItem)?.Content?.ToString() ?? navigation.Items[index].ToString()!;
+                        string page = ((PivotItem)navigation.Items[index]).Header is TextBlock header ? header.Text : ((PivotItem)navigation.Items[index]).Header?.ToString() ?? "";
                         results.Add($"PASS layout {size.Width}x{size.Height} {page}: navigation/actions/feedback visible; outer scroll {hostScroll.ScrollableHeight:0.##}; content scroll {contentScroll.ScrollableHeight:0.##}");
                         if (index == 0)
                         {
@@ -144,6 +161,9 @@ public sealed partial class SmokeApp : Application
                 await Task.Delay(120);
                 await CheckProfileSwitchingAsync(view, controller, results);
                 await CheckSettingsCommitAsync(view, controller, results);
+                navigation.SelectedIndex = 1;
+                await Task.Delay(160);
+                await CheckSaveSuggestionAsync(view, controller, results);
                 await CheckFirstRunSettingsAsync(hostPanel, view, results);
                 navigation.SelectedIndex = 4;
                 await Task.Delay(120);
@@ -262,12 +282,56 @@ public sealed partial class SmokeApp : Application
         results.Add("PASS settings-commit: content and automation edits remain drafts until save; successful save clears dirty state");
     }
 
-    private static async Task CheckFirstRunSettingsAsync(StackPanel hostPanel, BackupSettingsView originalView, List<string> results)
+    private static async Task CheckSaveSuggestionAsync(BackupSettingsView view, DemoController controller, List<string> results)
+    {
+        GameIdentity game = controller.GetGames()[0];
+        string expected = Path.Combine(game.LocalDirectory!, "save");
+        ComboBox games = Field<ComboBox>(view, "_saveGame");
+        games.SelectedItem = games.Items.OfType<ComboBoxItem>().Single(item => item.Tag is Guid id && id == game.Id);
+        await Task.Delay(120);
+        Check((games.SelectedItem as ComboBoxItem)?.Content as string == game.Name, "存档游戏选择器应显示游戏名，安装目录应单独标注。");
+        Check(!controller.Settings.SaveConfigs.Any(config => config.GameId == game.Id), "候选位置显示时不应自动添加为备份位置。");
+        InvokeButton(FindButton(view, "检查并添加…"));
+        ContentDialog cancelled = await WaitDialogAsync(view, "添加存档位置");
+        TextBox candidate = FindAll<TextBox>(cancelled).Single(input => input.Header as string == "存档路径");
+        Check(candidate.Text == expected, "候选确认应包含完整save路径，不能退回游戏根目录。");
+        Check(FindAll<TextBlock>(cancelled).Any(text => text.Text.Contains("save")), "候选预览应显示save相对规则。");
+        cancelled.Hide();
+        await WaitIdleAsync(view);
+        Check(!controller.Settings.SaveConfigs.Any(config => config.GameId == game.Id), "取消候选确认不应写入备份位置。");
+        InvokeButton(FindButton(view, "检查并添加…"));
+        ContentDialog confirmed = await WaitDialogAsync(view, "添加存档位置");
+        await CaptureAsync(confirmed, "save-candidate-confirmation.png");
+        InvokePrimary(confirmed);
+        await WaitIdleAsync(view);
+        SaveLocation location = controller.Settings.SaveConfigs.Single(config => config.GameId == game.Id).Locations.Single();
+        Check(location.BaseKind == SaveBaseKind.GameRoot && location.RelativePath.Replace('\\', '/') == "save",
+            "确认候选后应保存为游戏目录下的save相对规则。");
+        ListView roots = Field<ListView>(view, "_saveRoots");
+        Check(roots.Items.Count == 1 && roots.Items[0].ToString()!.Contains(expected), "已保存位置应展示完整save路径，不能只展示安装目录。");
+        results.Add("PASS save-candidate: full save path and relative rule shown; candidate stays unconfigured until confirmed; cancel leaves settings unchanged");
+        Check(!FindAll<Button>(view).Any(button => button.Content as string == "检查并添加…"), "已加入备份的位置不应再次作为未配置候选显示。");
+        int savesBefore = controller.SaveCalls;
+        MethodInfo edit = typeof(BackupSettingsView).GetMethod("EditSaveLocationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        Task duplicate = (Task)edit.Invoke(view, [null, expected + Path.DirectorySeparatorChar, false])!;
+        ContentDialog duplicateDialog = await WaitDialogAsync(view, "添加存档位置");
+        InvokePrimary(duplicateDialog);
+        await Task.Delay(150);
+        Check(!duplicate.IsCompleted && FindAll<InfoBar>(duplicateDialog).Any(info => info.IsOpen && info.Message.Contains("已加入备份")),
+            "重复添加同一存档路径时应保留对话框并明确提示已加入备份。");
+        Check(controller.SaveCalls == savesBefore && controller.Settings.SaveConfigs.Single(config => config.GameId == game.Id).Locations.Count == 1,
+            "重复添加及路径尾分隔符变化不应写配置或增加位置。");
+        duplicateDialog.Hide();
+        await duplicate;
+        results.Add("PASS save-path-deduplication: trailing separator candidates collapse; configured candidate disappears; repeated manual add is rejected without writes");
+    }
+
+    private async Task CheckFirstRunSettingsAsync(StackPanel hostPanel, BackupSettingsView originalView, List<string> results)
     {
         var controller = new DemoController();
         controller.Settings.Profiles.Clear();
         controller.Settings.ActiveProfileId = null;
-        var view = new BackupSettingsView(controller);
+        var view = new BackupSettingsView(controller, () => WinRT.Interop.WindowNative.GetWindowHandle(_window!));
         hostPanel.Children.Clear();
         hostPanel.Children.Add(view);
         await Task.Delay(200);
@@ -365,6 +429,9 @@ internal sealed class DemoController : IBackupUiController
     public DemoController()
     {
         string local = Path.Combine(Program.Output, "synthetic-game"); Directory.CreateDirectory(local);
+        string save = Path.Combine(local, "save");
+        Directory.CreateDirectory(save);
+        File.WriteAllText(Path.Combine(save, "slot001.sav"), "Synthetic save content for isolated UI checks.");
         _games = [new GameIdentity { Id = Guid.NewGuid(), Name = "本地游戏（演示）", LocalDirectory = local },
             new GameIdentity { Id = Guid.NewGuid(), Name = "仅保留游戏信息（演示）" }];
         ProviderProfile profile = new() { Name = "演示 WebDAV", Endpoint = "https://example.invalid/dav/", Kind = ProviderKind.WebDav };
@@ -381,6 +448,10 @@ internal sealed class DemoController : IBackupUiController
         Settings.LibraryMappings.Add(new PendingLibraryMapping { Id = "demo-library", Name = "旧设备游戏库（演示）", OriginalPath = "D:\\Games" });
     }
     public IReadOnlyList<GameIdentity> GetGames() => _games;
+    public IReadOnlyList<SavePathSuggestion> GetSavePathSuggestions(Guid gameId) => gameId == _games[0].Id
+        ? [new SavePathSuggestion(Path.Combine(_games[0].LocalDirectory!, "save"), false, "隔离宿主检测候选"),
+            new SavePathSuggestion(Path.Combine(_games[0].LocalDirectory!, "save") + Path.DirectorySeparatorChar, false, "尾分隔符相同路径候选")]
+        : [];
     public IReadOnlyList<PendingRestore> GetPending() => _pending;
     public long PendingBytes => 1024 * 1024 * 12;
     public bool IsBusy => false;
@@ -388,7 +459,12 @@ internal sealed class DemoController : IBackupUiController
     public event Action? StateChanged { add { } remove { } }
     public int SaveCalls { get; private set; }
     public int OperationCalls { get; private set; }
-    public Task SaveSettingsAsync() { SaveCalls++; return Task.CompletedTask; }
+    public Task SaveSettingsAsync()
+    {
+        SaveCalls++;
+        if (Program.Interactive) File.WriteAllText(Path.Combine(Program.Output, "interactive-state.json"), JsonSerializer.Serialize(Settings, BackupJson.Options));
+        return Task.CompletedTask;
+    }
     public Task RefreshPendingAsync(CancellationToken token) => Task.CompletedTask;
     public void CancelCurrentOperation() { }
     private Task Disabled() { OperationCalls++; return Task.FromException(new InvalidOperationException("隔离界面检查不执行真实操作。")); }

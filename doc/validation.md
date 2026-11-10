@@ -55,3 +55,17 @@ UiSmoke 通过隔离宿主的嵌套滚动容器覆盖 1080×760、760×620、620
 截图与结果保存于 `tests/UiSmoke/artifacts/settings-redesign-verified/`。PNG 通过浅色隔离宿主渲染，已打开核对；并非用户真实宿主或云盘账号的验收截图。原生文件选择器已通过编译，尚未人工点击验收。
 
 最终 x64 Release 插件构建退出码为 0，安装包 944,675 字节、31 个文件项；ZIP CRC、主/核心 DLL 与 PRI 对应当前构建产物及共享程序集排除检查全部通过。SHA-256：`0F4D0106AF26C692E4ACAA2AE75F0DB1B3E81549F7C5E49D750DD319FD75275E`。
+
+## 2026-11-11 顶部标签栏与存档路径修正
+
+用户实际宿主复现文件选择器报错 `XamlRoot.get_ContentIslandEnvironment` 方法不存在，说明此前在新版 SDK 的隔离构建不能证明该方法在宿主运行时可用。本轮改用宿主现有 `GetMainWindow()` 返回的 Window，经 `WindowNative.GetWindowHandle` 初始化原生文件/文件夹选择器，移除对该 XamlRoot 方法的依赖。顶部导航按用户偏好改为紧凑横向标签栏，内容与底部反馈仍分别滚动和固定。
+
+选择游戏时不再把安装路径混在游戏名称中；单独标注安装目录，已确认存档显示完整实际路径。宿主无效检测结果会继续检查其保存的其他有效存档路径，并实时核对直接 `save` 子目录作为候选。候选必须打开确认框并保存后才加入备份，启动、刷新、取消都不自动添加位置。路径比较统一处理尾部分隔符，已配置位置不会重复推荐，重复手动添加被拦截。
+
+用户提供的游戏目录只做了文件名和目录存在性的只读核对，确认其直接 `save` 子目录含 `.rmmzsave` 文件；未修改真实游戏文件、存档或云盘。新增选择器与路径测试均使用隔离合成目录。
+
+本轮 `tests/UiSmoke` 共 36 项自动检查全部通过，覆盖三种窗口尺寸的顶部标签栏与固定操作、日志展开、存档候选完整路径、`GameRoot + save` 相对规则、候选取消、保存后不重复推荐，以及尾分隔符去重和重复手动添加拦截。结果和截图位于 `tests/UiSmoke/artifacts/tabs-savepath-verified/`。
+
+另外通过 computer-use 在隔离交互窗口实际打开 Windows 原生文件夹选择器，取消后没有新增配置；再次选择合成的 `synthetic-game/save` 并确认保存，页面显示完整 `\save` 路径。检查交互测试写出的配置，恰好一个位置、`BaseKind=GameRoot`、`RelativePath=save`、`IsFile=false`，并非游戏安装根目录。原生文件选择器也完成打开和取消验证，没有新增位置。交互状态位于 `tests/UiSmoke/artifacts/tabs-picker-verified-interactive/`。这些操作未接触真实存档；用户实际旧版宿主尚需导入新版后复核。
+
+最终 x64 Release 构建成功，安装包 950,047 字节、31 个文件项；ZIP CRC、入口/核心 DLL 与 PRI 对应当前编译产物、共享程序集排除均通过；包内 DLL 不含 `get_ContentIslandEnvironment` 访问器引用。SHA-256：`EC41CEAEF9D446E866D6C8F8DAED61A9677766401033073F8EC1B709FAE04713`。

@@ -40,6 +40,7 @@ public partial class Plugin : IPlugin, IPluginSetting
         await host.CompletePendingImportAsync();
         _controller = new BackupController(hostApi, host, store, settings, pending);
         BackupPage.Controller = _controller;
+        BackupPage.HostWindowProvider = () => HostApi.GetMainWindow();
         HostApi.Messenger.Register<GalgameStoppedMessage>(this, (_, _) => _controller.ScheduleGameExit());
         InitUi();
     }
@@ -50,6 +51,7 @@ public partial class Plugin : IPlugin, IPluginSetting
         HostApi.UnregisterSidebarButton("cloud-backup");
         _controller?.Dispose();
         BackupPage.Controller = null;
+        BackupPage.HostWindowProvider = null;
         // 待恢复存档及回滚副本包含用户数据，不在卸载插件时静默删除。
         return Task.CompletedTask;
     }

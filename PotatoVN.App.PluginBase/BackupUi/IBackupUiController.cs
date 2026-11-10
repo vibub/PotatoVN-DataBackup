@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,6 +10,7 @@ public interface IBackupUiController
 {
     BackupSettings Settings { get; }
     IReadOnlyList<GameIdentity> GetGames();
+    IReadOnlyList<SavePathSuggestion> GetSavePathSuggestions(Guid gameId) => Array.Empty<SavePathSuggestion>();
     IReadOnlyList<PendingRestore> GetPending();
     long PendingBytes { get; }
     bool IsBusy { get; }
@@ -30,3 +31,5 @@ public interface IBackupUiController
     Task ClearPendingAsync(IReadOnlyList<Guid> ids, CancellationToken cancellationToken);
     Task ApplyLibraryMappingAsync(string libraryId, string targetRoot, CancellationToken cancellationToken);
 }
+
+public sealed record SavePathSuggestion(string Path, bool IsFile, string Source);
