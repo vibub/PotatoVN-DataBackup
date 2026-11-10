@@ -1,44 +1,27 @@
-﻿using System.Threading.Tasks;
-using GalgameManager.Models;
-using GalgameManager.WinApp.Base.Contracts.PluginUi;
+using System.Threading.Tasks;
 using GalgameManager.WinApp.Base.Models.Plugin;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using PotatoVN.App.PluginBase.Controls;
+using PotatoVN.App.PluginBase.BackupUi;
 
 namespace PotatoVN.App.PluginBase;
 
-public partial class Plugin : IGalgamePageLeftPanel, IGalgamePageRightPanel
+public partial class Plugin
 {
-    private bool _uiInit;
-    
     private void InitUi()
     {
-        if (_uiInit) return;
-        _hostApi.RegisterSidebarButton(new SidebarButtonInfo
+        HostApi.RegisterSidebarButton(new SidebarButtonInfo
         {
-           Id = "sidebarButton1",
-           Text = "插件按钮",
-           Placement = SidebarButtonPlacement.Menu, 
-           FluentGlyph = "&#xE709;",
+            Id = "cloud-backup", Text = "云备份", Placement = SidebarButtonPlacement.Menu,
+            FluentGlyph = "\uE753", FallbackGlyph = "\uE753"
         }, () =>
         {
-            _hostApi.NavigateTo(typeof(ExamplePage), "Example Page");
+            HostApi.NavigateTo(typeof(BackupPage), "云备份");
             return Task.CompletedTask;
         });
-        _uiInit = true;
     }
 
-    public FrameworkElement CreateSettingUi() => new UserControl1(_data);
-    
-    public async Task<FrameworkElement> CreateLeftPanelUiAsync(Galgame game)
-    {
-        await Task.CompletedTask;
-        return new TextBlock { Text = $"这是左侧面板，当前游戏：{game.Name.Value}" };
-    }
-
-    public Task<FrameworkElement> CreateRightPanelUiAsync(Galgame game)
-    {
-        return Task.FromResult<FrameworkElement>(new TextBlock { Text = $"这是右侧面板，当前游戏：{game.Name.Value}" });
-    }
+    public FrameworkElement CreateSettingUi() => _controller == null
+        ? new TextBlock { Text = "云备份正在初始化。" }
+        : new BackupSettingsView(_controller);
 }

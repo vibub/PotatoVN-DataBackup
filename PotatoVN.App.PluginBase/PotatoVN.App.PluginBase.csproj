@@ -6,11 +6,10 @@
     <RuntimeIdentifiers>win-x86;win-x64;win-arm64</RuntimeIdentifiers>
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
+    <Version>1.0.0</Version>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <EnableCoreFrameworkTracking>false</EnableCoreFrameworkTracking>
-    <!--TODO：请务必修改AssemblyName你的插件Id一致，避免和其他插件冲突-->
-    <!--TODO：命名规则A{id}，如A78f4ca27-7ffb-43b2-a5a5-111111db096d-->
-    <AssemblyName>A78f4ca27-7ffb-43b2-a5a5-111111db096d</AssemblyName>
+    <AssemblyName>A9c734d66-e185-4f1f-b5c2-6f48046e143b</AssemblyName>
     <!-- 要处理该警告需要用到.Net Preview的特性，等特性稳定（进入正式版）后再处理 -->
     <NoWarn>MVVMTK0045</NoWarn>
   </PropertyGroup>
@@ -129,7 +128,7 @@ StampedFiles = stampedFiles.ToArray();
     <None Remove="Controls\ExamplePage.xaml" />
   </ItemGroup>
   <ItemGroup>
-    <PackageReference Include="AngleSharp" Version="1.3.0" />
+
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4948">
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
@@ -138,6 +137,7 @@ StampedFiles = stampedFiles.ToArray();
     </PackageReference>
   </ItemGroup>
   <ItemGroup>
+    <ProjectReference Include="..\PotatoVN.Backup.Core\PotatoVN.Backup.Core.csproj" />
     <ProjectReference Include="..\PotatoVN\GalgameManager.WinApp.Base\GalgameManager.WinApp.Base.csproj">
       <Private>false</Private>
     </ProjectReference>
@@ -174,7 +174,7 @@ StampedFiles = stampedFiles.ToArray();
 			<_PluginSourceDir>$(TargetDir)</_PluginSourceDir>
 			<_PluginTempDir>$(IntermediateOutputPath)PluginPack\</_PluginTempDir>
             <PluginPackageOutputDir>artifacts</PluginPackageOutputDir>
-            <PluginPackageFileName>plugin.pvnplugin.zip</PluginPackageFileName>
+            <PluginPackageFileName>PotatoVN-DataBackup.pvnplugin.zip</PluginPackageFileName>
             <_PluginPackageFullPath>$(PluginPackageOutputDir)\$(PluginPackageFileName)</_PluginPackageFullPath>
 		</PropertyGroup>
 
