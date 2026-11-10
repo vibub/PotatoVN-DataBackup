@@ -19,6 +19,7 @@ public sealed partial class SmokeApp
     private static async Task RunMatchingSmokeAsync(BackupSettingsView view, DemoController controller, List<string> results)
     {
         string before = JsonSerializer.Serialize(controller.Settings, BackupJson.Options);
+        int savesBefore = controller.SaveCalls, operationsBefore = controller.OperationCalls;
         var settingsOnly = await Preview(view, new SnapshotManifest(), BackupContent.Settings, CancellationToken.None);
         Check(settingsOnly.Continue && settingsOnly.Matching == null, "仅设置恢复不弹出游戏匹配");
         results.Add("PASS matching-settings-only: no dialog");
@@ -81,7 +82,7 @@ public sealed partial class SmokeApp
         results.Add("PASS matching-second-close: no continuation");
 
         Check(before == JsonSerializer.Serialize(controller.Settings, BackupJson.Options), "匹配预览与取消不得写配置");
-        Check(controller.SaveCalls == 0 && controller.OperationCalls == 0, "匹配预览不得保存配置、下载或触发恢复");
+        Check(controller.SaveCalls == savesBefore && controller.OperationCalls == operationsBefore, "匹配预览不得保存配置、下载或触发恢复");
         results.Add("PASS matching-side-effects: no settings writes / downloads / restore calls");
     }
 

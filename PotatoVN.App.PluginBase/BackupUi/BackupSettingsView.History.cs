@@ -1,7 +1,8 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -11,95 +12,108 @@ namespace PotatoVN.App.PluginBase.BackupUi;
 
 public sealed partial class BackupSettingsView
 {
-    private readonly ListView _snapshotList = new() { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 340 };
-    private readonly TextBlock _snapshotDetails = Note("刷新历史后选择一个版本。");
+    private readonly ListView _snapshotList = new() { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 280 };
+    private readonly TextBlock _snapshotDetails = Note("点击“读取云端备份”，然后选择需要恢复的版本。");
     private readonly ComboBox _mapBackupGame = new() { Header = "备份中的游戏", HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly ComboBox _mapLocalGame = new() { Header = "本机对应条目", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox _mapLocalGame = new() { Header = "本机对应的游戏", HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly StackPanel _libraryRows = Stack(16);
+    private readonly Dictionary<string, string> _libraryTargetDrafts = new();
     private Guid? _historyProfileId;
 
     private StackPanel BuildHistoryTab()
     {
         var panel = Stack();
-        panel.Children.Add(Heading("云端历史版本"));
-        panel.Children.Add(Note("显示当前渠道中各设备的已完成备份。资料恢复需重启；存档先进入待恢复区，不会直接写入游戏位置。"));
-        var actions = Row();
-        actions.Children.Add(ActionButton("刷新历史", async ct =>
+        panel.Children.Add(Heading("从云端恢复"));
+        panel.Children.Add(Note("1. 读取备份 → 2. 选择版本和内容 → 3. 确认恢复。软件资料恢复需要重启；存档会先下载到“待恢复存档”，由你另行确认写入。"));
+        panel.Children.Add(ActionButton("读取云端备份", async ct =>
         {
-            if (_controller.Settings.ActiveProfileId == null) throw new InvalidOperationException("请先在渠道页设置当前渠道。");
+            if (_controller.Settings.ActiveProfileId == null) throw new InvalidOperationException("请先在“连接云盘”中添加并保存云盘账号。");
             IReadOnlyList<SnapshotManifest> snapshots = await _controller.ListSnapshotsAsync(ct);
             _historyProfileId = _controller.Settings.ActiveProfileId;
             _snapshotList.Items.Clear();
             foreach (SnapshotManifest snapshot in snapshots.OrderByDescending(s => s.CreatedUtc))
                 _snapshotList.Items.Add(new SnapshotChoice(snapshot));
-            _snapshotDetails.Text = snapshots.Count == 0 ? "当前渠道还没有已完成的备份。" : $"找到 {snapshots.Count} 个版本，请选择后恢复。";
-        }));
-        actions.Children.Add(ActionButton("选择内容并恢复", async ct =>
-        {
-            SnapshotManifest snapshot = RequireSnapshot();
-            var body = Stack(8);
-            body.Children.Add(Note($"版本：{snapshot.CreatedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} · {snapshot.DeviceName}"));
-            body.Children.Add(Note("选择要恢复的类型。未选内容及现有本地目录关联会保留；软件资料恢复需要重启，存档只下载至待恢复区。"));
-            var checks = new List<(BackupContent Flag, CheckBox Check)>();
-            foreach ((BackupContent flag, string label) in ContentChoices)
-            {
-                bool available = snapshot.Content.HasFlag(flag);
-                var check = new CheckBox { Content = available ? label : $"{label}（此版本未包含）", IsChecked = available, IsEnabled = available };
-                checks.Add((flag, check));
-                body.Children.Add(check);
-            }
-            if (await DialogAsync("恢复备份", new ScrollViewer { Content = body, MaxHeight = 470 }, "恢复所选内容") != ContentDialogResult.Primary) return;
-            BackupContent content = checks.Where(c => c.Check.IsChecked == true).Aggregate(BackupContent.None, (flags, item) => flags | item.Flag);
-            if (content == BackupContent.None) throw new InvalidOperationException("请至少选择一种恢复内容。");
-            var matching = await ConfirmRestoreMatchesAsync(snapshot, content, ct);
-            if (!matching.Continue) return;
-            await _controller.RestoreSnapshotAsync(snapshot, content, ct, matching.Matching);
-            await _controller.RefreshPendingAsync(ct);
-        }));
-        panel.Children.Add(actions);
+            if (_snapshotList.Items.Count > 0) _snapshotList.SelectedIndex = 0;
+            else _snapshotDetails.Text = "这个备份位置还没有已完成的备份。可先在本机点击“立即备份”，或检查是否选择了正确的云盘账号。";
+        }, successMessage: "云端备份列表已更新。"));
         panel.Children.Add(_snapshotList);
         panel.Children.Add(_snapshotDetails);
-        panel.Children.Add(Heading("游戏对应关系"));
-        panel.Children.Add(Note("通常按游戏标识自动匹配。存在同名条目、识别冲突或需要指定对应关系时，在这里手动确认，再执行恢复。"));
-        panel.Children.Add(_mapBackupGame);
-        panel.Children.Add(_mapLocalGame);
+        Button restore = ActionButton("选择内容并恢复…", RestoreSelectedSnapshotAsync, successMessage: "所选内容已处理；下载的存档请前往“待恢复存档”继续恢复。");
+        restore.Visibility = Visibility.Collapsed;
+        panel.Children.Add(restore);
+
+        var mapping = Stack();
+        mapping.Children.Add(Note("通常会自动识别对应游戏。只有识别冲突或需要更改对应关系时才需要这里的设置；保存后再执行上方恢复。"));
+        mapping.Children.Add(_mapBackupGame);
+        mapping.Children.Add(_mapLocalGame);
         var mappingActions = Row();
         mappingActions.Children.Add(ActionButton("保存对应关系", async ct =>
         {
-            _ = RequireSnapshot();
+            RequireSnapshot();
             if (Choice(_mapBackupGame) is not Guid backupId || Choice(_mapLocalGame) is not Guid localId)
-                throw new InvalidOperationException("请分别选择备份游戏和本机条目。");
+                throw new InvalidOperationException("请分别选择备份游戏和本机游戏。");
             await _controller.ConfigureGameMappingAsync(backupId, localId, ct);
-        }));
-        mappingActions.Children.Add(ActionButton("恢复自动识别", async _ =>
+        }, successMessage: "游戏对应关系已保存。"));
+        mappingActions.Children.Add(ActionButton("改为自动识别", async _ =>
         {
+            RequireSnapshot();
             if (Choice(_mapBackupGame) is not Guid backupId) throw new InvalidOperationException("请选择备份中的游戏。");
-            _controller.Settings.GameMappings.RemoveAll(mapping => mapping.BackupGameId == backupId);
+            _controller.Settings.GameMappings.RemoveAll(item => item.BackupGameId == backupId);
             await _controller.SaveSettingsAsync();
             RefreshGameMappingChoices();
-        }));
-        mappingActions.Children.Add(ActionButton("刷新本机条目", _ => { RefreshGameMappingChoices(); return Task.CompletedTask; }));
-        panel.Children.Add(mappingActions);
+        }, successMessage: "已移除手动对应关系，后续恢复将自动识别。"));
+        mappingActions.Children.Add(ActionButton("刷新本机游戏", _ => { RefreshGameMappingChoices(); return Task.CompletedTask; }, successMessage: "本机游戏列表已更新。"));
+        mapping.Children.Add(mappingActions);
+        panel.Children.Add(new Expander { Header = "高级：手动指定游戏对应关系", Content = mapping, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         _snapshotList.SelectionChanged += (_, _) =>
         {
+            restore.Visibility = _snapshotList.SelectedItem is SnapshotChoice ? Visibility.Visible : Visibility.Collapsed;
             if (_snapshotList.SelectedItem is SnapshotChoice row)
             {
                 SnapshotManifest snapshot = row.Snapshot;
                 string types = string.Join("、", ContentChoices.Where(choice => snapshot.Content.HasFlag(choice.Flag)).Select(choice => choice.Label));
-                _snapshotDetails.Text = $"包含：{types}\n游戏：{snapshot.Games.Count} 个；存档版本引用：{snapshot.SaveManifestPaths.Count} 个";
+                _snapshotDetails.Text = $"包含：{types}\n{snapshot.Games.Count} 个游戏 · {snapshot.SaveManifestPaths.Count} 份游戏存档";
                 if (snapshot.Notices.Count > 0) _snapshotDetails.Text += "\n" + string.Join("\n", snapshot.Notices);
             }
+            else _snapshotDetails.Text = "请选择一个备份版本。切换云盘后需要重新读取备份列表。";
             RefreshGameMappingChoices();
         };
         _mapBackupGame.SelectionChanged += (_, _) => SelectSavedGameMapping();
         return panel;
     }
 
+    private async Task RestoreSelectedSnapshotAsync(CancellationToken ct)
+    {
+        SnapshotManifest snapshot = RequireSnapshot();
+        var body = Stack(8);
+        body.Children.Add(Note($"版本：{snapshot.CreatedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} · {snapshot.DeviceName}"));
+        body.Children.Add(Note("选择要恢复的内容。未勾选的内容及本机有效的游戏目录关联会保留。"));
+        var checks = new List<(BackupContent Flag, CheckBox Check)>();
+        foreach ((BackupContent flag, string label) in ContentChoices)
+        {
+            bool available = snapshot.Content.HasFlag(flag);
+            var check = new CheckBox { Content = available ? label : $"{label}（此版本未包含）", IsChecked = available, IsEnabled = available };
+            checks.Add((flag, check));
+            body.Children.Add(check);
+        }
+        var hint = new InfoBar { Severity = InfoBarSeverity.Informational, IsClosable = false, IsOpen = true,
+            Message = "软件资料恢复需要重启。游戏存档只下载到待恢复存档，确认对应游戏和目标位置后再手动写入。" };
+        body.Children.Add(hint);
+        if (await DialogAsync("选择恢复内容", new ScrollViewer { Content = body, MaxHeight = 470 }, "确认并继续") != ContentDialogResult.Primary)
+        { ShowMessage("已取消恢复。", InfoBarSeverity.Informational); return; }
+        BackupContent content = checks.Where(c => c.Check.IsChecked == true).Aggregate(BackupContent.None, (flags, item) => flags | item.Flag);
+        if (content == BackupContent.None) throw new InvalidOperationException("请至少选择一种恢复内容。");
+        var matching = await ConfirmRestoreMatchesAsync(snapshot, content, ct);
+        if (!matching.Continue) { ShowMessage("已取消恢复。", InfoBarSeverity.Informational); return; }
+        await _controller.RestoreSnapshotAsync(snapshot, content, ct, matching.Matching);
+        await _controller.RefreshPendingAsync(ct);
+    }
+
     private SnapshotManifest RequireSnapshot()
     {
         if (_historyProfileId != _controller.Settings.ActiveProfileId)
-            throw new InvalidOperationException("当前渠道已切换，请重新刷新历史版本。");
-        return (_snapshotList.SelectedItem as SnapshotChoice)?.Snapshot ?? throw new InvalidOperationException("请选择一个历史版本。");
+            throw new InvalidOperationException("备份位置已切换，请重新读取云端备份。");
+        return (_snapshotList.SelectedItem as SnapshotChoice)?.Snapshot ?? throw new InvalidOperationException("请先读取云端备份，再选择一个版本。");
     }
 
     private void RefreshGameMappingChoices()
@@ -127,10 +141,10 @@ public sealed partial class BackupSettingsView
     private StackPanel BuildLibraryTab()
     {
         var panel = Stack();
-        panel.Children.Add(Heading("恢复后的库路径"));
-        panel.Children.Add(Note("旧设备的路径只作为参考。指定这台设备上的对应游戏库后，才建立本地目录关联；不会因为盘符或目录名称相同就自动关联。"));
+        panel.Children.Add(Heading("关联这台电脑的游戏库"));
+        panel.Children.Add(Note("换电脑恢复后，选择旧游戏库在这台电脑上的对应文件夹。关联完成后，存档仍需在“待恢复存档”手动恢复。"));
         panel.Children.Add(_libraryRows);
-        panel.Children.Add(ActionButton("刷新待映射库", _ => { RefreshLibraryView(); return Task.CompletedTask; }));
+        panel.Children.Add(ActionButton("刷新游戏库列表", _ => { RefreshLibraryView(); return Task.CompletedTask; }, successMessage: "游戏库列表已更新。"));
         RefreshLibraryView();
         return panel;
     }
@@ -141,27 +155,35 @@ public sealed partial class BackupSettingsView
         _libraryRows.Children.Clear();
         if (_controller.Settings.LibraryMappings.Count == 0)
         {
-            _libraryRows.Children.Add(Note("没有待映射的游戏库。新设备恢复资料后，原库路径会显示在这里。"));
+            _libraryRows.Children.Add(Note("暂无需要关联的游戏库。换电脑恢复软件资料后，旧设备的游戏库会出现在这里。"));
             return;
         }
         foreach (PendingLibraryMapping mapping in _controller.Settings.LibraryMappings)
         {
             var group = Stack(8);
             group.Children.Add(Heading(mapping.Name, "BodyStrongTextBlockStyle"));
-            group.Children.Add(Note($"原位置：{mapping.OriginalPath}"));
-            var target = TextInput("本机游戏库目录", "例如：E:\\VisualNovels");
-            target.Text = mapping.TargetPath ?? "";
+            group.Children.Add(Note($"旧设备位置：{mapping.OriginalPath}"));
+            var target = TextInput("这台电脑上的对应文件夹", "点击浏览选择，或粘贴文件夹路径");
+            target.Text = _libraryTargetDrafts.GetValueOrDefault(mapping.Id) ?? mapping.TargetPath ?? "";
+            target.TextChanged += (_, _) => _libraryTargetDrafts[mapping.Id] = target.Text;
             group.Children.Add(target);
-            var apply = new Button { Content = "确认并关联此库", IsEnabled = _operationCts == null && !_controller.IsBusy };
+            var actions = Row();
+            Button browse = BrowsePathButton(target);
+            browse.IsEnabled = _operationCts == null && !_controller.IsBusy;
+            actions.Children.Add(browse);
+            var apply = new Button { Content = "确认并关联此游戏库…", IsEnabled = _operationCts == null && !_controller.IsBusy };
             apply.Click += async (_, _) => await RunAsync(async ct =>
             {
                 string path = target.Text.Trim();
                 if (!Path.IsPathFullyQualified(path) || !Directory.Exists(path))
-                    throw new InvalidOperationException("请选择本机已存在的游戏库绝对目录。");
-                if (await DialogAsync("确认游戏库对应位置", Note($"将“{mapping.Name}”映射到：\n{path}\n\n关联后仍需在待恢复区手动恢复存档。"), "关联此库") != ContentDialogResult.Primary) return;
+                    throw new InvalidOperationException("请选择这台电脑上已存在的游戏库文件夹。");
+                if (await DialogAsync("确认游戏库对应位置", Note($"将“{mapping.Name}”关联到：\n{path}\n\n只会关联该文件夹内可确认的游戏；存档仍需在待恢复存档手动恢复。"), "关联此游戏库") != ContentDialogResult.Primary)
+                { ShowMessage("未更改游戏库关联。", InfoBarSeverity.Informational); return; }
                 await _controller.ApplyLibraryMappingAsync(mapping.Id, path, ct);
-            });
-            group.Children.Add(apply);
+                _libraryTargetDrafts.Remove(mapping.Id);
+            }, successMessage: "游戏库关联已完成，存档请在待恢复存档页确认恢复。");
+            actions.Children.Add(apply);
+            group.Children.Add(actions);
             _libraryRows.Children.Add(group);
         }
     }

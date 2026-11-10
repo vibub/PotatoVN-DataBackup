@@ -10,128 +10,174 @@ namespace PotatoVN.App.PluginBase.BackupUi;
 
 public sealed partial class BackupSettingsView
 {
-    private readonly ComboBox _profilePick = new() { Header = "选择渠道配置", HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly ComboBox _providerKind = new() { Header = "渠道类型", HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly TextBox _profileName = TextInput("配置名称", "例如：家中 NAS");
-    private readonly TextBox _endpoint = TextInput("WebDAV 地址", "https://example.com/dav/");
-    private readonly TextBox _username = TextInput("用户名");
-    private readonly PasswordBox _password = new() { Header = "密码或应用专用密码", PlaceholderText = "留空保留已保存密码" };
-    private readonly TextBox _remotePath = TextInput("备份目录", "留空使用服务器根目录");
-    private readonly TextBox _clientId = TextInput("OAuth 应用 ID");
-    private readonly TextBox _tenant = TextInput("微软登录目录", "通常使用 common");
+    private readonly ComboBox _profilePick = new() { Header = "使用的备份渠道", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ComboBox _providerKind = new() { Header = "备份到哪里", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBox _profileName = TextInput("渠道名称（可选）", "留空按云盘类型命名");
+    private readonly TextBox _endpoint = TextInput("WebDAV 服务器地址", "例如：https://dav.jianguoyun.com/dav/");
+    private readonly TextBox _username = TextInput("账号 / 用户名");
+    private readonly PasswordBox _password = new() { Header = "密码或应用专用密码", PlaceholderText = "填写服务商提供的密码" };
+    private readonly TextBox _clientId = TextInput("应用程序（客户端）ID", "粘贴 Microsoft Entra 中的应用 ID");
+    private readonly TextBox _tenant = TextInput("微软登录目录", "通常无需修改，默认 common");
     private readonly TextBox _googleJson = new()
     {
-        Header = "谷歌桌面应用配置", PlaceholderText = "粘贴从 Google Cloud 下载的桌面应用 JSON",
-        AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 96, MaxHeight = 180,
-
+        Header = "Google 桌面应用配置 JSON", PlaceholderText = "粘贴从 Google Cloud 下载的“桌面应用”JSON；保存或登录时会自动导入",
+        AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 100, MaxHeight = 180
     };
+    private readonly TextBlock _repositoryNote = Note("");
+    private readonly TextBlock _googleConfigured = Note("");
     private StackPanel _webDavFields = null!;
     private StackPanel _oauthFields = null!;
     private StackPanel _googleFields = null!;
+    private Button _authorizeChannel = null!;
+    private Button _deleteChannel = null!;
     private ProviderProfile? _editingProfile;
+    private bool _profileDirty;
 
     private StackPanel BuildProfilesTab()
     {
         var panel = Stack();
-        panel.Children.Add(Heading("备份渠道"));
-        panel.Children.Add(Note("可以保存多个配置，每次备份使用当前渠道。首次使用微软或谷歌云盘，需要注册自己的 OAuth 应用。"));
+        panel.Children.Add(Heading("连接云盘"));
+        panel.Children.Add(Note("先选择云盘类型，填写连接信息，再测试连接。设置完成后，到“备份内容”选择要备份的数据。"));
         panel.Children.Add(_profilePick);
         var profileActions = Row();
-        profileActions.Children.Add(ActionButton("新增渠道", async _ =>
+        profileActions.Children.Add(ActionButton("添加其他渠道", async _ =>
         {
-            var profile = new ProviderProfile { Name = $"渠道 {_controller.Settings.Profiles.Count + 1}" };
-            _controller.Settings.Profiles.Add(profile);
-            _controller.Settings.ActiveProfileId ??= profile.Id;
-            await _controller.SaveSettingsAsync();
-            RefreshProfiles(profile.Id);
-        }));
-        profileActions.Children.Add(ActionButton("设为当前", async _ =>
-        {
-            await SaveProfileFieldsAsync();
-            _controller.Settings.ActiveProfileId = RequireProfile().Id;
-            await _controller.SaveSettingsAsync();
-            _snapshotList.Items.Clear();
-        }));
-        profileActions.Children.Add(ActionButton("删除配置", async _ =>
+            if (!await ConfirmLeavingProfileAsync()) return;
+            _editingProfile = new ProviderProfile();
+            RefreshProfiles(_editingProfile.Id);
+        }, successMessage: "已打开新渠道表单，填写连接信息后保存即可。"));
+        _deleteChannel = ActionButton("删除此渠道", async _ =>
         {
             ProviderProfile profile = RequireProfile();
-            if (await DialogAsync("删除渠道配置", Note($"删除“{profile.Name}”的本机配置？云端备份不会删除。"), "删除配置") != ContentDialogResult.Primary) return;
+            bool lastChannel = _controller.Settings.Profiles.Count == 1;
+            string automationNote = lastChannel && (_timer.IsOn || _onExit.IsOn) ? "同时关闭自动备份，避免继续使用已删除的渠道。" : "";
+            if (await DialogAsync("删除渠道", Note($"删除“{profile.Name}”在本机保存的连接配置？云端文件和备份不会删除。{automationNote}"), "删除本机配置") != ContentDialogResult.Primary) return;
+            if (lastChannel)
+            {
+                _controller.Settings.TimerEnabled = _timer.IsOn = false;
+                _controller.Settings.OnGameExitEnabled = _onExit.IsOn = false;
+            }
             _controller.Settings.Profiles.Remove(profile);
             if (_controller.Settings.ActiveProfileId == profile.Id)
                 _controller.Settings.ActiveProfileId = _controller.Settings.Profiles.FirstOrDefault()?.Id;
             await _controller.SaveSettingsAsync();
             _editingProfile = null;
+            ClearChannelHistory();
             RefreshProfiles(_controller.Settings.ActiveProfileId);
-            _snapshotList.Items.Clear();
-        }));
-        panel.Children.Add(profileActions);
-        panel.Children.Add(_profileName);
-        AddChoice(_providerKind, ProviderKind.WebDav, "WebDAV");
-        AddChoice(_providerKind, ProviderKind.OneDrive, "OneDrive");
-        AddChoice(_providerKind, ProviderKind.GoogleDrive, "Google Drive");
+        }, successMessage: "已删除本机渠道配置，云端备份保留。" );
+        profileActions.Children.Add(_deleteChannel);
+
+        AddChoice(_providerKind, ProviderKind.WebDav, "WebDAV（坚果云、NAS 等）");
+        AddChoice(_providerKind, ProviderKind.OneDrive, "OneDrive（微软云盘）");
+        AddChoice(_providerKind, ProviderKind.GoogleDrive, "Google Drive（谷歌云盘）");
         panel.Children.Add(_providerKind);
         _webDavFields = Stack();
-        foreach (UIElement field in new UIElement[] { _endpoint, _username, _password, _remotePath }) _webDavFields.Children.Add(field);
+        foreach (UIElement field in new UIElement[] { _endpoint, _username, _password }) _webDavFields.Children.Add(field);
+        _webDavFields.Children.Add(Note("坚果云等服务请使用应用专用密码。地址填服务商给出的 WebDAV 地址即可，无需另建或填写备份目录。"));
         panel.Children.Add(_webDavFields);
         _oauthFields = Stack();
+        _oauthFields.Children.Add(Note("需要先在 Microsoft Entra 注册可供个人账号登录的桌面应用，然后填写它的客户端 ID。登录时会打开系统浏览器。"));
         _oauthFields.Children.Add(_clientId);
-        _oauthFields.Children.Add(_tenant);
-        _oauthFields.Children.Add(Note("授权会打开系统浏览器。令牌保存在本机；新设备请使用相同的应用配置和云盘账号。"));
         panel.Children.Add(_oauthFields);
         _googleFields = Stack();
+        _googleFields.Children.Add(Note("需要先在 Google Cloud 创建 OAuth“桌面应用”，下载 JSON 配置后粘贴到下方。登录时会打开系统浏览器。"));
+        _googleFields.Children.Add(_googleConfigured);
         _googleFields.Children.Add(_googleJson);
-        _googleFields.Children.Add(ActionButton("导入粘贴的谷歌配置", async _ =>
-        {
-            ProviderProfile profile = RequireProfile();
-            using JsonDocument document = JsonDocument.Parse(_googleJson.Text);
-            if (!document.RootElement.TryGetProperty("installed", out JsonElement installed) ||
-                !installed.TryGetProperty("client_id", out JsonElement id) || string.IsNullOrWhiteSpace(id.GetString()))
-                throw new InvalidOperationException("请粘贴 Google Cloud 中“桌面应用”类型的 OAuth 配置 JSON。");
-            profile.Kind = ProviderKind.GoogleDrive;
-            profile.ClientId = id.GetString()!;
-            if (installed.TryGetProperty("client_secret", out JsonElement secret))
-                await _controller.SetSecretAsync(profile.Id, "client-secret", secret.GetString() ?? "");
-            _clientId.Text = profile.ClientId;
-            SelectChoice(_providerKind, ProviderKind.GoogleDrive);
-            _googleJson.Text = "";
-            await SaveProfileFieldsAsync();
-        }));
         panel.Children.Add(_googleFields);
+        panel.Children.Add(_repositoryNote);
+
         var connectionActions = Row();
-        connectionActions.Children.Add(ActionButton("保存渠道", async _ => await SaveProfileFieldsAsync()));
-        connectionActions.Children.Add(ActionButton("登录 / 重新授权", async ct =>
+        _authorizeChannel = ActionButton("登录云盘并测试", async ct =>
         {
             await SaveProfileFieldsAsync();
             ProviderProfile profile = RequireProfile();
-            if (profile.Kind == ProviderKind.WebDav) throw new InvalidOperationException("WebDAV 使用账号密码，无需浏览器授权，请点击测试连接。");
             await _controller.AuthorizeAsync(profile.Id, ct);
-        }));
-        connectionActions.Children.Add(ActionButton("测试连接", async ct =>
+            await _controller.ProbeAsync(profile.Id, ct);
+        }, successMessage: "云盘登录成功，连接测试通过。现在可以选择备份内容并开始备份。" );
+        connectionActions.Children.Add(_authorizeChannel);
+        connectionActions.Children.Add(ActionButton("保存并测试连接", async ct =>
         {
             await SaveProfileFieldsAsync();
             await _controller.ProbeAsync(RequireProfile().Id, ct);
-        }));
+        }, successMessage: "连接测试通过，渠道已保存并用于备份与恢复。" ));
         panel.Children.Add(connectionActions);
-        panel.Children.Add(Note("删除本机配置不会删除云端文件。备份使用自己的云盘空间；压缩包不额外加密。"));
-        _profilePick.SelectionChanged += (_, _) =>
+        panel.Children.Add(Note("测试和登录会自动保存当前渠道。只想保存时，使用下方“保存设置”。"));
+
+        var advanced = Stack();
+        advanced.Children.Add(profileActions);
+        advanced.Children.Add(_profileName);
+        advanced.Children.Add(_tenant);
+        panel.Children.Add(new Expander { Header = "更多选项", Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+        _profilePick.SelectionChanged += async (_, _) =>
         {
-            if (!_loading) LoadProfile(Choice(_profilePick) is Guid id ? _controller.Settings.Profiles.FirstOrDefault(p => p.Id == id) : null);
+            if (_loading || Choice(_profilePick) is not Guid id || id == _editingProfile?.Id) return;
+            Guid? old = _editingProfile?.Id;
+            _loading = true;
+            SelectChoice(_profilePick, old);
+            _loading = false;
+            await RunAsync(async _ =>
+            {
+                if (!await ConfirmLeavingProfileAsync()) return;
+                ProviderProfile? selected = _controller.Settings.Profiles.FirstOrDefault(p => p.Id == id);
+                if (selected == null) return;
+                Guid? previousActive = _controller.Settings.ActiveProfileId;
+                _controller.Settings.ActiveProfileId = selected.Id;
+                try { await _controller.SaveSettingsAsync(); }
+                catch { _controller.Settings.ActiveProfileId = previousActive; throw; }
+                _editingProfile = selected;
+                ClearChannelHistory();
+                RefreshProfiles(selected.Id);
+                ShowMessage($"已切换到“{selected.Name}”，后续备份和恢复都使用此渠道。", InfoBarSeverity.Success);
+            }, false);
         };
-        _providerKind.SelectionChanged += (_, _) => UpdateProviderFields();
+        _providerKind.SelectionChanged += (_, _) => { UpdateProviderFields(); ProfileFieldChanged(); };
+        foreach (TextBox input in new[] { _profileName, _endpoint, _username, _clientId, _tenant, _googleJson })
+            input.TextChanged += (_, _) => ProfileFieldChanged();
+        _password.PasswordChanged += (_, _) => ProfileFieldChanged();
         RefreshProfiles(_controller.Settings.ActiveProfileId);
         return panel;
     }
 
+    private void ProfileFieldChanged()
+    {
+        if (_loading) return;
+        _profileDirty = true;
+        RefreshStatus();
+    }
+
+    private async Task<bool> ConfirmLeavingProfileAsync()
+    {
+        if (!_profileDirty) return true;
+        var dialog = NewDialog("渠道信息尚未保存", Note("保存当前填写的连接信息后继续？选择放弃只会丢弃本次编辑。"), "保存并继续", "继续编辑");
+        dialog.SecondaryButtonText = "放弃更改";
+        ContentDialogResult result = await dialog.ShowAsync();
+        if (result == ContentDialogResult.None) return false;
+        if (result == ContentDialogResult.Primary) await SaveProfileFieldsAsync();
+        return true;
+    }
+
+    private void ClearChannelHistory()
+    {
+        _historyProfileId = null;
+        _snapshotList.Items.Clear();
+    }
+
     private void RefreshProfiles(Guid? selected)
     {
+        ProviderProfile? draft = _editingProfile != null && !_controller.Settings.Profiles.Any(p => p.Id == _editingProfile.Id) ? _editingProfile : null;
+        if (_controller.Settings.Profiles.Count == 0 && draft == null) draft = new ProviderProfile();
         _loading = true;
         _profilePick.Items.Clear();
         foreach (ProviderProfile profile in _controller.Settings.Profiles)
             AddChoice(_profilePick, profile.Id, $"{profile.Name} · {ProviderLabel(profile.Kind)}");
+        if (draft != null) AddChoice(_profilePick, draft.Id, "新渠道（待保存）");
         if (selected is Guid id) SelectChoice(_profilePick, id);
         if (_profilePick.SelectedItem == null && _profilePick.Items.Count > 0) _profilePick.SelectedIndex = 0;
+        _profilePick.Visibility = _profilePick.Items.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+        Guid? pick = Choice(_profilePick) as Guid?;
+        ProviderProfile? chosen = _controller.Settings.Profiles.FirstOrDefault(p => p.Id == pick) ?? draft;
         _loading = false;
-        LoadProfile(Choice(_profilePick) is Guid pick ? _controller.Settings.Profiles.FirstOrDefault(p => p.Id == pick) : null);
+        LoadProfile(chosen);
         RefreshStatus();
     }
 
@@ -139,16 +185,24 @@ public sealed partial class BackupSettingsView
     {
         _editingProfile = profile;
         _loading = true;
-        _profileName.Text = profile?.Name ?? "";
+        bool saved = profile != null && _controller.Settings.Profiles.Contains(profile);
+        _profileName.Text = saved ? profile!.Name : "";
         SelectChoice(_providerKind, profile?.Kind ?? ProviderKind.WebDav);
         _endpoint.Text = profile?.Endpoint ?? "";
         _username.Text = profile?.Username ?? "";
-        _remotePath.Text = profile?.RemotePath ?? "";
         _clientId.Text = profile?.ClientId ?? "";
         _tenant.Text = profile?.Tenant ?? "common";
         _password.Password = "";
+        _password.PlaceholderText = saved ? "留空沿用已保存密码；输入新密码可替换" : "填写服务商提供的密码";
         _googleJson.Text = "";
+        _profileDirty = false;
         _loading = false;
+        _deleteChannel.Visibility = saved ? Visibility.Visible : Visibility.Collapsed;
+        _repositoryNote.Text = profile?.RepositoryFolder == "PotatoVN_Data" && string.IsNullOrEmpty(profile.RemotePath)
+            ? "备份目录：PotatoVN_Data（连接时自动创建，无需配置）"
+            : $"沿用已有备份目录：{(string.IsNullOrEmpty(profile?.RemotePath) ? "" : profile.RemotePath.TrimEnd('/', '\\') + "/")}{profile?.RepositoryFolder}。保持原位置以继续访问历史备份。";
+        _googleConfigured.Text = profile?.Kind == ProviderKind.GoogleDrive && !string.IsNullOrWhiteSpace(profile.ClientId)
+            ? "已保存桌面应用配置；需要更换时粘贴新的 JSON。" : "尚未导入应用配置。";
         UpdateProviderFields();
     }
 
@@ -157,34 +211,56 @@ public sealed partial class BackupSettingsView
         ProviderKind kind = Choice(_providerKind) is ProviderKind value ? value : ProviderKind.WebDav;
         if (_webDavFields == null) return;
         _webDavFields.Visibility = kind == ProviderKind.WebDav ? Visibility.Visible : Visibility.Collapsed;
-        _oauthFields.Visibility = kind == ProviderKind.WebDav ? Visibility.Collapsed : Visibility.Visible;
+        _oauthFields.Visibility = kind == ProviderKind.OneDrive ? Visibility.Visible : Visibility.Collapsed;
         _googleFields.Visibility = kind == ProviderKind.GoogleDrive ? Visibility.Visible : Visibility.Collapsed;
         _tenant.Visibility = kind == ProviderKind.OneDrive ? Visibility.Visible : Visibility.Collapsed;
+        _authorizeChannel.Visibility = kind == ProviderKind.WebDav ? Visibility.Collapsed : Visibility.Visible;
     }
 
-    private ProviderProfile RequireProfile() => _editingProfile ?? throw new InvalidOperationException("请先新增一个渠道配置。");
+    private ProviderProfile RequireProfile() => _editingProfile ?? throw new InvalidOperationException("请先填写云盘连接信息。");
 
     private async Task SaveProfileFieldsAsync()
     {
         ProviderProfile profile = RequireProfile();
-        if (string.IsNullOrWhiteSpace(_profileName.Text)) throw new InvalidOperationException("请填写渠道配置名称。");
         ProviderKind kind = Choice(_providerKind) is ProviderKind picked ? picked : ProviderKind.WebDav;
+        string clientId = _clientId.Text.Trim();
+        string? clientSecret = null;
         if (kind == ProviderKind.WebDav && (!Uri.TryCreate(_endpoint.Text.Trim(), UriKind.Absolute, out Uri? endpoint) ||
-            (endpoint.Scheme != Uri.UriSchemeHttps && endpoint.Scheme != Uri.UriSchemeHttp)))
-            throw new InvalidOperationException("请填写以 https:// 或 http:// 开头的 WebDAV 地址。");
-        profile.Name = _profileName.Text.Trim();
+            (endpoint.Scheme != Uri.UriSchemeHttps && endpoint.Scheme != Uri.UriSchemeHttp) ||
+            !string.IsNullOrEmpty(endpoint.UserInfo) || !string.IsNullOrEmpty(endpoint.Query) || !string.IsNullOrEmpty(endpoint.Fragment)))
+            throw new InvalidOperationException("请填写服务商提供的 HTTP(S) WebDAV 地址；账号和密码请填在各自的输入框中。");
+        if (kind == ProviderKind.GoogleDrive && !string.IsNullOrWhiteSpace(_googleJson.Text))
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(_googleJson.Text);
+                if (document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty("installed", out JsonElement installed) ||
+                    installed.ValueKind != JsonValueKind.Object || !installed.TryGetProperty("client_id", out JsonElement id) || id.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(id.GetString()))
+                    throw new InvalidOperationException("请使用 Google Cloud 下载的“桌面应用”OAuth JSON 配置。");
+                clientId = id.GetString()!;
+                if (!installed.TryGetProperty("client_secret", out JsonElement secret) || secret.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(secret.GetString()))
+                    throw new InvalidOperationException("Google 配置缺少客户端密码，请完整粘贴下载的桌面应用 JSON。");
+                clientSecret = secret.GetString();
+            }
+            catch (JsonException) { throw new InvalidOperationException("Google 配置不是有效 JSON，请完整粘贴下载文件的内容。"); }
+        }
+        if (kind == ProviderKind.GoogleDrive && string.IsNullOrWhiteSpace(_googleJson.Text) && profile.Kind != ProviderKind.GoogleDrive)
+            throw new InvalidOperationException("切换到 Google Drive 时，请粘贴对应的桌面应用 JSON 配置。");
+        if (kind != ProviderKind.WebDav && string.IsNullOrWhiteSpace(clientId))
+            throw new InvalidOperationException(kind == ProviderKind.GoogleDrive ? "请先粘贴 Google Cloud 的桌面应用 JSON 配置。" : "请先填写 Microsoft Entra 的应用程序（客户端）ID。");
+        profile.Name = string.IsNullOrWhiteSpace(_profileName.Text) ? ProviderLabel(kind) : _profileName.Text.Trim();
         profile.Kind = kind;
         profile.Endpoint = _endpoint.Text.Trim();
-        profile.Username = _username.Text;
-        profile.RemotePath = _remotePath.Text.Trim();
-        profile.ClientId = _clientId.Text.Trim();
+        profile.Username = _username.Text.Trim();
+        profile.ClientId = clientId;
         profile.Tenant = string.IsNullOrWhiteSpace(_tenant.Text) ? "common" : _tenant.Text.Trim();
-        if (!string.IsNullOrEmpty(_password.Password))
-        {
-            await _controller.SetSecretAsync(profile.Id, "password", _password.Password);
-            _password.Password = "";
-        }
+        if (!_controller.Settings.Profiles.Contains(profile)) _controller.Settings.Profiles.Add(profile);
+        if (!string.IsNullOrEmpty(_password.Password)) await _controller.SetSecretAsync(profile.Id, "password", _password.Password);
+        if (clientSecret != null) await _controller.SetSecretAsync(profile.Id, "client-secret", clientSecret);
+        bool changedChannel = _profileDirty || _controller.Settings.ActiveProfileId != profile.Id;
+        _controller.Settings.ActiveProfileId = profile.Id;
         await _controller.SaveSettingsAsync();
+        if (changedChannel) ClearChannelHistory();
         RefreshProfiles(profile.Id);
     }
 }

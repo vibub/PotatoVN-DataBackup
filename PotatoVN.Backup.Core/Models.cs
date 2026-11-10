@@ -18,12 +18,19 @@ public enum RestoreStatus { PendingLink, PendingPath, Ready, Restored, Failed }
 
 public sealed class ProviderProfile
 {
+    public ProviderProfile() { }
+
+    // 旧配置没有此字段，继续使用原仓库；新渠道采用更易识别的固定目录。
+    [JsonConstructor]
+    public ProviderProfile(string? repositoryFolder) => RepositoryFolder = repositoryFolder ?? "PotatoVN-DataBackup";
+
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = "新渠道";
     public ProviderKind Kind { get; set; }
     public string Endpoint { get; set; } = "";
     public string Username { get; set; } = "";
     public string RemotePath { get; set; } = "";
+    public string RepositoryFolder { get; set; } = "PotatoVN_Data";
     public string ClientId { get; set; } = "";
     public string Tenant { get; set; } = "common";
 }

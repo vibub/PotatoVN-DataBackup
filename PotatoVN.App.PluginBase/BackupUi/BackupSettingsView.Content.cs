@@ -20,7 +20,9 @@ public sealed partial class BackupSettingsView
     ];
     private readonly Dictionary<BackupContent, CheckBox> _contentChecks = new();
     private readonly CheckBox _allGames = new() { Content = "备份全部游戏（包含非本地游戏）" };
-    private readonly ListView _gameSelection = new() { SelectionMode = ListViewSelectionMode.Multiple, MaxHeight = 300 };
+    private readonly ListView _gameSelection = new() { SelectionMode = ListViewSelectionMode.Multiple, IsMultiSelectCheckBoxEnabled = true, MaxHeight = 260 };
+    private readonly HashSet<Guid> _selectedGameIds = new();
+    private readonly TextBlock _gameScopeNote = Note("");
     private readonly ToggleSwitch _timer = new() { Header = "定时备份", OnContent = "已开启", OffContent = "已关闭" };
     private readonly ToggleSwitch _onExit = new() { Header = "游戏退出后备份", OnContent = "已开启", OffContent = "已关闭" };
     private readonly NumberBox _interval = Number("定时间隔（小时）", .05, 8760, .5);
@@ -34,12 +36,12 @@ public sealed partial class BackupSettingsView
         var panel = Stack();
         panel.Children.Add(Heading("选择备份内容"));
         panel.Children.Add(Note("手动、定时和游戏退出后备份共用以下勾选。未选的字段和图片不会上传；恢复时可以再次选择类型。"));
-        var choices = Stack(6);
+        var choices = Row();
         foreach ((BackupContent flag, string label) in ContentChoices)
         {
-            var check = new CheckBox { Content = label, IsChecked = _controller.Settings.Content.HasFlag(flag) };
-            check.Checked += (_, _) => _controller.Settings.Content |= flag;
-            check.Unchecked += (_, _) => _controller.Settings.Content &= ~flag;
+            var check = new CheckBox { Content = new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap }, Width = 264, IsChecked = _controller.Settings.Content.HasFlag(flag) };
+            check.Checked += (_, _) => MarkSettingsDirty();
+            check.Unchecked += (_, _) => MarkSettingsDirty();
             _contentChecks.Add(flag, check);
             choices.Children.Add(check);
         }
@@ -56,14 +58,20 @@ public sealed partial class BackupSettingsView
         panel.Children.Add(Heading("游戏范围"));
         _allGames.IsChecked = _controller.Settings.AllGames;
         panel.Children.Add(_allGames);
+        _selectedGameIds.UnionWith(_controller.Settings.SelectedGameIds);
         RefreshGameSelection();
-        _gameSelection.IsEnabled = !_controller.Settings.AllGames;
-        _allGames.Checked += (_, _) => { _controller.Settings.AllGames = true; _gameSelection.IsEnabled = false; };
-        _allGames.Unchecked += (_, _) => { _controller.Settings.AllGames = false; _gameSelection.IsEnabled = true; };
+        UpdateGameScope();
+        _allGames.Checked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
+        _allGames.Unchecked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
         _gameSelection.SelectionChanged += (_, _) =>
         {
-            if (!_loading) _controller.Settings.SelectedGameIds = _gameSelection.SelectedItems.OfType<GameChoice>().Select(g => g.Game.Id).ToList();
+            if (_loading) return;
+            _selectedGameIds.Clear();
+            _selectedGameIds.UnionWith(_gameSelection.SelectedItems.OfType<GameChoice>().Select(g => g.Game.Id));
+            UpdateGameScope();
+            MarkSettingsDirty();
         };
+        panel.Children.Add(_gameScopeNote);
         panel.Children.Add(_gameSelection);
         panel.Children.Add(ActionButton("刷新游戏列表", _ =>
         {
@@ -80,14 +88,24 @@ public sealed partial class BackupSettingsView
     private void RefreshGameSelection()
     {
         _loading = true;
+        _selectedGameIds.IntersectWith(_controller.GetGames().Select(game => game.Id));
         _gameSelection.Items.Clear();
         foreach (GameIdentity game in _controller.GetGames().OrderBy(g => g.Name, StringComparer.CurrentCultureIgnoreCase))
         {
             var choice = new GameChoice(game);
             _gameSelection.Items.Add(choice);
-            if (_controller.Settings.SelectedGameIds.Contains(game.Id)) _gameSelection.SelectedItems.Add(choice);
+            if (_selectedGameIds.Contains(game.Id)) _gameSelection.SelectedItems.Add(choice);
         }
         _loading = false;
+        UpdateGameScope();
+    }
+
+    private void UpdateGameScope()
+    {
+        bool all = _allGames.IsChecked == true;
+        _gameSelection.Visibility = all ? Visibility.Collapsed : Visibility.Visible;
+        _gameSelection.IsEnabled = !all;
+        _gameScopeNote.Text = all ? "包含所有游戏，之后添加的游戏也会自动纳入。" : $"已选 {_selectedGameIds.Count} 款游戏。请在列表中勾选需要备份的游戏。";
     }
 
     private StackPanel BuildAutomationTab()
@@ -102,8 +120,21 @@ public sealed partial class BackupSettingsView
         _keepSnapshots.Value = _controller.Settings.KeepSnapshots;
         _keepSaves.Value = _controller.Settings.KeepSaves;
         _deviceName.Text = _controller.Settings.DeviceName;
-        foreach (UIElement item in new UIElement[] { _timer, _interval, _onExit, _exitDelay, _deviceName, _keepSnapshots, _keepSaves })
-            panel.Children.Add(item);
+        panel.Children.Add(_timer);
+        panel.Children.Add(_interval);
+        panel.Children.Add(_onExit);
+        panel.Children.Add(_exitDelay);
+        var advanced = Stack();
+        advanced.Children.Add(Note("通常保持默认值即可。超过保留数量后会清理较旧版本，仍被快照引用的存档除外。"));
+        foreach (UIElement item in new UIElement[] { _deviceName, _keepSnapshots, _keepSaves }) advanced.Children.Add(item);
+        panel.Children.Add(new Expander { Header = "设备名称与历史保留", Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+        _interval.IsEnabled = _timer.IsOn;
+        _exitDelay.IsEnabled = _onExit.IsOn;
+        _timer.Toggled += (_, _) => { _interval.IsEnabled = _timer.IsOn; MarkSettingsDirty(); };
+        _onExit.Toggled += (_, _) => { _exitDelay.IsEnabled = _onExit.IsOn; MarkSettingsDirty(); };
+        foreach (NumberBox number in new[] { _interval, _exitDelay, _keepSnapshots, _keepSaves })
+            number.ValueChanged += (_, _) => MarkSettingsDirty();
+        _deviceName.TextChanged += (_, _) => MarkSettingsDirty();
         panel.Children.Add(Note("仍被保留快照引用的存档会延后清理。游戏卸载或本机找不到存档，不会用空存档覆盖云端版本。"));
         panel.Children.Add(Note(_controller.Settings.LastSuccessfulBackupUtc is { } time ? $"最近成功备份：{time.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : "尚未完成备份。"));
         return panel;
@@ -118,10 +149,21 @@ public sealed partial class BackupSettingsView
         if (!double.IsFinite(_keepSnapshots.Value) || _keepSnapshots.Value < 1 || _keepSnapshots.Value > 10000 ||
             !double.IsFinite(_keepSaves.Value) || _keepSaves.Value < 1 || _keepSaves.Value > 10000)
             throw new InvalidOperationException("保留版本数应为 1 至 10000。");
-        if ((_timer.IsOn || _onExit.IsOn) && _controller.Settings.Content == BackupContent.None)
-            throw new InvalidOperationException("开启自动备份前，请至少选择一种备份内容。");
-        if ((_timer.IsOn || _onExit.IsOn) && _controller.Settings.ActiveProfileId == null)
-            throw new InvalidOperationException("开启自动备份前，请先设置当前渠道并完成登录或连接测试。");
+        BackupContent content = _contentChecks.Where(pair => pair.Value.IsChecked == true).Aggregate(BackupContent.None, (flags, pair) => flags | pair.Key);
+        if (content == BackupContent.None)
+            throw new InvalidOperationException("请到“备份内容”至少勾选一种需要备份的内容。");
+        if (_allGames.IsChecked != true && _selectedGameIds.Count == 0 &&
+            (content & ~(BackupContent.Settings | BackupContent.Home)) != BackupContent.None)
+            throw new InvalidOperationException("请到“备份内容”勾选至少一款游戏，或开启“备份全部游戏”。");
+        if ((_timer.IsOn || _onExit.IsOn) && _controller.Settings.ActiveProfileId == null && !_profileDirty)
+            throw new InvalidOperationException("请先到“连接云盘”填写连接信息并测试连接，再开启自动备份。");
+        BackupSettings settings = _controller.Settings;
+        var previous = (settings.Content, settings.AllGames, settings.SelectedGameIds, settings.TimerEnabled,
+            settings.OnGameExitEnabled, settings.IntervalHours, settings.ExitDelaySeconds,
+            settings.KeepSnapshots, settings.KeepSaves, settings.DeviceName);
+        settings.Content = content;
+        settings.AllGames = _allGames.IsChecked == true;
+        settings.SelectedGameIds = _selectedGameIds.ToList();
         _controller.Settings.TimerEnabled = _timer.IsOn;
         _controller.Settings.OnGameExitEnabled = _onExit.IsOn;
         _controller.Settings.IntervalHours = _interval.Value;
@@ -129,8 +171,19 @@ public sealed partial class BackupSettingsView
         _controller.Settings.KeepSnapshots = (int)Math.Round(_keepSnapshots.Value);
         _controller.Settings.KeepSaves = (int)Math.Round(_keepSaves.Value);
         _controller.Settings.DeviceName = string.IsNullOrWhiteSpace(_deviceName.Text) ? Environment.MachineName : _deviceName.Text.Trim();
-        if (_editingProfile != null) await SaveProfileFieldsAsync();
-        else await _controller.SaveSettingsAsync();
+        try
+        {
+            if (_editingProfile != null && (_profileDirty || settings.Profiles.Contains(_editingProfile))) await SaveProfileFieldsAsync();
+            else await _controller.SaveSettingsAsync();
+            MarkSettingsSaved();
+        }
+        catch
+        {
+            (settings.Content, settings.AllGames, settings.SelectedGameIds, settings.TimerEnabled,
+                settings.OnGameExitEnabled, settings.IntervalHours, settings.ExitDelaySeconds,
+                settings.KeepSnapshots, settings.KeepSaves, settings.DeviceName) = previous;
+            throw;
+        }
     }
 
     private static NumberBox Number(string header, double min, double max, double step) => new()

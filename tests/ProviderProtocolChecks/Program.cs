@@ -13,6 +13,7 @@ var taskRoot = Path.Combine(artifactRoot, Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(taskRoot);
 var tests = new (string Name, Func<Task> Run)[]
 {
+    ("新渠道固定目录及旧配置目录兼容", RepositoryDirectoryCompatibility),
     ("WebDAV 完整往返、Unicode 路径、越界拒绝", WebDavRoundTrip),
     ("OneDrive 自动刷新令牌与 401 后刷新", OAuthRefresh),
     ("OneDrive 分片及预授权传输不携带 Bearer", OneDriveChunks),
@@ -45,6 +46,32 @@ finally
 Console.WriteLine($"{tests.Length - failures}/{tests.Length} provider protocol checks passed.");
 return failures == 0 ? 0 : 1;
 
+async Task RepositoryDirectoryCompatibility()
+{
+    var fresh = new ProviderProfile { Kind = ProviderKind.WebDav, Endpoint = "https://dav.test/webdav/" };
+    Equal("PotatoVN_Data", fresh.RepositoryFolder, "new channels use fixed data directory");
+    var legacy = JsonSerializer.Deserialize<ProviderProfile>("{\"Kind\":0,\"Endpoint\":\"https://dav.test/webdav/\",\"RemotePath\":\"旧目录\"}", BackupJson.Options)!;
+    Equal("PotatoVN-DataBackup", legacy.RepositoryFolder, "legacy missing field preserves old repository folder");
+    Equal("旧目录", legacy.RemotePath, "legacy custom parent retained");
+    var roundTrip = JsonSerializer.Deserialize<ProviderProfile>(JsonSerializer.Serialize(fresh, BackupJson.Options), BackupJson.Options)!;
+    Equal("PotatoVN_Data", roundTrip.RepositoryFolder, "new directory persists across restart");
+    foreach (var profile in new[] { fresh, legacy })
+    {
+        var requested = new List<string>();
+        using var http = new HttpClient(new FakeHandler(request =>
+        {
+            string path = Uri.UnescapeDataString(request.RequestUri!.AbsolutePath);
+            requested.Add(path);
+            return Task.FromResult(request.Method.Method == "MKCOL" ? new HttpResponseMessage(HttpStatusCode.Created) :
+                new HttpResponseMessage((HttpStatusCode)207) { Content = new StringContent("<d:multistatus xmlns:d=\"DAV:\"/>") });
+        }));
+        using var provider = new WebDavProvider(profile, new MemorySecrets(), http);
+        await provider.ProbeAsync();
+        string repository = "/webdav/" + (profile.RemotePath.Length == 0 ? "" : profile.RemotePath + "/") + profile.RepositoryFolder + "/";
+        True(requested.Contains(repository), "WebDAV creates and probes selected repository directory");
+        True(requested.All(path => !path.Contains(profile == fresh ? "PotatoVN-DataBackup" : "PotatoVN_Data")), "no implicit directory relocation");
+    }
+}
 async Task WebDavRoundTrip()
 {
     var profile = new ProviderProfile { Kind = ProviderKind.WebDav, Endpoint = "https://dav.test/webdav/", RemotePath = "用户/备份", Username = "test-user" };
@@ -132,7 +159,7 @@ async Task OAuthRefresh()
             Equal("refreshed", request.Headers.Authorization?.Parameter, "refreshed token used");
             var path = Uri.UnescapeDataString(request.RequestUri.AbsolutePath);
             if (path.EndsWith("/special/approot")) return Json("{\"id\":\"app\",\"folder\":{}}");
-            if (path.Contains("PotatoVN-DataBackup")) return Json("{\"id\":\"backup\",\"folder\":{}}");
+            if (path.Contains("PotatoVN_Data")) return Json("{\"id\":\"backup\",\"folder\":{}}");
             return Json("{\"id\":\"file\",\"size\":3}");
         }));
         using var provider = new OneDriveProvider(profile, secrets, http);
@@ -176,7 +203,7 @@ async Task OneDriveChunks()
         Equal("access-test", request.Headers.Authorization?.Parameter, "Graph API bearer token");
         var path = Uri.UnescapeDataString(uri.AbsolutePath);
         if (path.EndsWith("/special/approot")) return Json("{\"id\":\"app\",\"folder\":{}}");
-        if (path.Contains("PotatoVN-DataBackup")) return Json("{\"id\":\"backup\",\"folder\":{}}");
+        if (path.Contains("PotatoVN_Data")) return Json("{\"id\":\"backup\",\"folder\":{}}");
         if (path.EndsWith("createUploadSession")) return Json("{\"uploadUrl\":\"https://upload.test/session?sig=fake\"}");
         if (path.EndsWith(":/v1")) return Json("{\"id\":\"v1\",\"folder\":{}}");
         return Json($"{{\"id\":\"file\",\"size\":{bytes.Length},\"@microsoft.graph.downloadUrl\":\"https://download.test/file?sig=fake\"}}");
@@ -235,7 +262,7 @@ async Task GoogleChunks()
             return new(HttpStatusCode.NoContent);
         }
         if (query.Contains("alt=media")) return new(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) };
-        if (query.Contains("name = 'PotatoVN-DataBackup'")) return Json("{\"files\":[{\"id\":\"backup\",\"name\":\"PotatoVN-DataBackup\",\"mimeType\":\"application/vnd.google-apps.folder\"}]}");
+        if (query.Contains("name = 'PotatoVN_Data'")) return Json("{\"files\":[{\"id\":\"backup\",\"name\":\"PotatoVN_Data\",\"mimeType\":\"application/vnd.google-apps.folder\"}]}");
         if (query.Contains("name = 'v1'")) return Json("{\"files\":[{\"id\":\"v1\",\"name\":\"v1\",\"mimeType\":\"application/vnd.google-apps.folder\"}]}");
         if (query.Contains("name = 'large.zip'")) return Json(uploaded ? $"{{\"files\":[{{\"id\":\"file\",\"name\":\"large.zip\",\"size\":\"{bytes.Length}\"}}]}}" : "{\"files\":[]}");
         pageRequests++;
@@ -262,7 +289,7 @@ async Task GoogleDuplicates()
 {
     var profile = new ProviderProfile { Kind = ProviderKind.GoogleDrive, ClientId = "google-client" };
     var secrets = await Tokens(profile);
-    using var http = new HttpClient(new FakeHandler(_ => Task.FromResult(Json("{\"files\":[{\"id\":\"a\",\"name\":\"PotatoVN-DataBackup\"},{\"id\":\"b\",\"name\":\"PotatoVN-DataBackup\"}]}"))));
+    using var http = new HttpClient(new FakeHandler(_ => Task.FromResult(Json("{\"files\":[{\"id\":\"a\",\"name\":\"PotatoVN_Data\"},{\"id\":\"b\",\"name\":\"PotatoVN_Data\"}]}"))));
     using var provider = new GoogleDriveProvider(profile, secrets, http);
     await Throws<IOException>(() => provider.ProbeAsync());
 }

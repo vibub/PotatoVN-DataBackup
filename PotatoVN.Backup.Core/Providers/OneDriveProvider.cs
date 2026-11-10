@@ -170,7 +170,7 @@ public sealed class OneDriveProvider : OAuthProviderBase
         ProviderHttp.Check(response, Label);
         var item = await ProviderHttp.ReadJsonAsync(response, token).ConfigureAwait(false);
         var parent = ProviderHttp.RequiredString(item, "id");
-        foreach (var part in RemotePaths.Normalize(Profile.RemotePath + "/PotatoVN-DataBackup").Split('/'))
+        foreach (var part in RemotePaths.Normalize(Profile.RemotePath + "/" + Profile.RepositoryFolder).Split('/'))
             parent = await EnsureChildDirectoryAsync(parent, part, token).ConfigureAwait(false);
         return _rootId = parent;
     }

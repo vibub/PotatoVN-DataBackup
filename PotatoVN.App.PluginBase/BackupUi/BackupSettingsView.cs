@@ -5,7 +5,9 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using PotatoVN.Backup.Core;
 
 namespace PotatoVN.App.PluginBase.BackupUi;
@@ -17,54 +19,96 @@ public sealed partial class BackupSettingsView : UserControl
     private readonly List<Control> _configurationTabs = new();
     private readonly TextBlock _status = Note("");
     private readonly TextBlock _activeChannel = Note("");
+    private readonly TextBlock _saveState = Note("设置已保存");
     private readonly InfoBar _feedback = new() { IsClosable = true };
     private readonly ProgressBar _progress = new() { IsIndeterminate = true, Visibility = Visibility.Collapsed };
-    private readonly Button _cancel = new() { Content = "取消当前操作", IsEnabled = false };
+    private readonly Button _cancel = new() { Content = "取消操作", Visibility = Visibility.Collapsed };
+    private readonly ComboBox _navigation = new() { HorizontalAlignment = HorizontalAlignment.Stretch, MaxWidth = 400 };
+    private readonly ScrollViewer _pageScroll = new()
+    {
+        VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+        HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        Padding = new Thickness(0, 4, 12, 8)
+    };
+    private readonly List<StackPanel> _pages = new();
+    private readonly List<string> _logEntries = new();
+    private readonly TextBox _logText = new()
+    {
+        IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+        Height = 88, Visibility = Visibility.Collapsed, Header = null, PlaceholderText = "操作结果和备份进度会显示在这里。"
+    };
     private CancellationTokenSource? _operationCts;
+    private FrameworkElement? _viewportHost;
     private bool _subscribed;
     private bool _loading;
+    private bool _settingsDirty;
+    private bool _operationDismissed;
+    private string? _lastStatus;
 
     public BackupSettingsView(IBackupUiController controller)
     {
         _controller = controller;
-        var root = new Grid { Padding = new Thickness(20), RowSpacing = 12 };
+        var root = new Grid { Padding = new Thickness(16), RowSpacing = 10, MaxWidth = 1040, HorizontalAlignment = HorizontalAlignment.Stretch };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-
-        var heading = Stack();
-        heading.Children.Add(Heading("云备份", "TitleTextBlockStyle"));
-        heading.Children.Add(Note("使用自己的云盘，备份资料与存档。未关联游戏的存档会保存在待恢复区。"));
+        var heading = Stack(4);
+        heading.Children.Add(Heading("云备份", "SubtitleTextBlockStyle"));
         heading.Children.Add(_activeChannel);
         root.Children.Add(heading);
-        Grid.SetRow(_feedback, 1);
-        root.Children.Add(_feedback);
 
-        var tabs = new Pivot();
-        tabs.Items.Add(Tab("渠道", BuildProfilesTab(), true));
-        tabs.Items.Add(Tab("备份内容", BuildContentTab(), true));
-        tabs.Items.Add(Tab("自动备份", BuildAutomationTab(), true));
-        tabs.Items.Add(Tab("历史恢复", BuildHistoryTab()));
-        tabs.Items.Add(Tab("待恢复区", BuildPendingTab()));
-        tabs.Items.Add(Tab("库路径映射", BuildLibraryTab(), true));
-        Grid.SetRow(tabs, 2);
-        root.Children.Add(tabs);
+        AutomationProperties.SetName(_navigation, "设置页面");
+        AutomationProperties.SetName(_pageScroll, "设置内容");
+        AutomationProperties.SetName(_feedback, "操作结果");
+        var navigationRow = Row();
+        navigationRow.Children.Add(_navigation);
+        navigationRow.Children.Add(Note("首次使用：连接云盘 → 选择备份内容 → 立即备份"));
+        Grid.SetRow(navigationRow, 1);
+        root.Children.Add(navigationRow);
+        AddPage("连接云盘", BuildProfilesTab(), true);
+        AddPage("备份内容", BuildContentTab(), true);
+        AddPage("自动备份", BuildAutomationTab(), true);
+        AddPage("恢复备份", BuildHistoryTab());
+        AddPage("待恢复存档", BuildPendingTab());
+        AddPage("游戏库关联", BuildLibraryTab(), true);
+        _navigation.SelectionChanged += (_, _) =>
+        {
+            if (Choice(_navigation) is int index)
+            {
+                _pageScroll.Content = _pages[index];
+                _pageScroll.ChangeView(null, 0, null, true);
+            }
+        };
+        _navigation.SelectedIndex = 0;
+        Grid.SetRow(_pageScroll, 2);
+        root.Children.Add(_pageScroll);
 
-        var footer = Stack();
+        var footer = Stack(6);
         footer.Children.Add(_progress);
         footer.Children.Add(_status);
+        footer.Children.Add(_feedback);
+        footer.Children.Add(_logText);
         var actions = Row();
-        actions.Children.Add(ActionButton("保存设置", async _ => await SaveAllSettingsAsync()));
-        actions.Children.Add(ActionButton("立即备份", async ct =>
+        actions.Children.Add(ActionButton("保存设置", async _ => await SaveAllSettingsAsync(), successMessage: "设置已保存。"));
+        Button backup = ActionButton("立即备份", async ct =>
         {
             await SaveAllSettingsAsync();
-            if (_controller.Settings.Content == BackupContent.None)
-                throw new InvalidOperationException("请至少选择一种备份内容。");
             await _controller.BackupAsync(ct);
-        }));
+        }, successMessage: "备份已完成。可在“恢复备份”查看云端版本。");
+        if (Application.Current.Resources.TryGetValue("AccentButtonStyle", out object? accent) && accent is Style style) backup.Style = style;
+        actions.Children.Add(backup);
         _cancel.Click += (_, _) => { _operationCts?.Cancel(); _controller.CancelCurrentOperation(); };
         actions.Children.Add(_cancel);
+        var logToggle = new Button { Content = "查看日志" };
+        logToggle.Click += (_, _) =>
+        {
+            bool opening = _logText.Visibility != Visibility.Visible;
+            _logText.Visibility = opening ? Visibility.Visible : Visibility.Collapsed;
+            logToggle.Content = opening ? "收起日志" : "查看日志";
+        };
+        actions.Children.Add(logToggle);
+        actions.Children.Add(_saveState);
         footer.Children.Add(actions);
         Grid.SetRow(footer, 3);
         root.Children.Add(footer);
@@ -75,8 +119,27 @@ public sealed partial class BackupSettingsView : UserControl
         {
             if (_subscribed) _controller.StateChanged -= ControllerStateChanged;
             _subscribed = false;
+            if (_viewportHost != null) _viewportHost.SizeChanged -= HostSizeChanged;
+            _viewportHost = null;
         };
         RefreshStatus();
+    }
+
+    private void AddPage(string title, StackPanel panel, bool configuration = false)
+    {
+        panel.MaxWidth = 860;
+        panel.HorizontalAlignment = HorizontalAlignment.Stretch;
+        AddChoice(_navigation, _pages.Count, title);
+        _pages.Add(panel);
+        // All configuration editors are frozen while a backup or restore is running.
+        if (configuration)
+        {
+            var container = new ContentControl { Content = panel, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            _configurationTabs.Add(container);
+            var wrapper = Stack(0);
+            wrapper.Children.Add(container);
+            _pages[^1] = wrapper;
+        }
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs args)
@@ -86,8 +149,27 @@ public sealed partial class BackupSettingsView : UserControl
             _controller.StateChanged += ControllerStateChanged;
             _subscribed = true;
         }
+        for (DependencyObject? parent = VisualTreeHelper.GetParent(this); parent != null; parent = VisualTreeHelper.GetParent(parent))
+        {
+            if (parent is ScrollViewer or ScrollView)
+            {
+                _viewportHost = (FrameworkElement)parent;
+                _viewportHost.SizeChanged += HostSizeChanged;
+                UpdateViewportHeight();
+                break;
+            }
+        }
         RefreshStatus();
         await RunAsync(async ct => await _controller.RefreshPendingAsync(ct), false);
+    }
+
+    private void HostSizeChanged(object sender, SizeChangedEventArgs args) => UpdateViewportHeight();
+
+    private void UpdateViewportHeight()
+    {
+        if (_viewportHost == null || _viewportHost.ActualHeight <= 0) return;
+        double top = TransformToVisual(_viewportHost).TransformPoint(new Windows.Foundation.Point()).Y;
+        MaxHeight = Math.Max(260, _viewportHost.ActualHeight - Math.Max(0, top) - 12);
     }
 
     private void ControllerStateChanged()
@@ -104,15 +186,45 @@ public sealed partial class BackupSettingsView : UserControl
     {
         bool busy = _operationCts != null || _controller.IsBusy;
         _progress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        _cancel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         _cancel.IsEnabled = _operationCts is { IsCancellationRequested: false } || _controller.IsBusy;
         foreach (Control control in _operationControls) control.IsEnabled = !busy;
         foreach (Control control in _configurationTabs) control.IsEnabled = !busy;
         _status.Text = string.IsNullOrWhiteSpace(_controller.Status) ? "就绪" : _controller.Status;
+        _status.MaxLines = 2;
+        _status.TextTrimming = TextTrimming.CharacterEllipsis;
+        ToolTipService.SetToolTip(_status, _status.Text);
+        if (_lastStatus != _status.Text)
+        {
+            _lastStatus = _status.Text;
+            AddLog(_status.Text);
+        }
         ProviderProfile? active = _controller.Settings.Profiles.FirstOrDefault(p => p.Id == _controller.Settings.ActiveProfileId);
-        _activeChannel.Text = active == null ? "尚未设置当前渠道" : $"当前渠道：{active.Name} · {ProviderLabel(active.Kind)}";
+        _activeChannel.Text = active == null ? "先连接一个云盘，再开始备份。" : $"当前云盘：{active.Name} · {ProviderLabel(active.Kind)}";
+        _saveState.Text = (_settingsDirty || _profileDirty) ? "有未保存的修改 · 立即备份也会保存设置" : "设置已保存";
     }
 
-    private async Task RunAsync(Func<CancellationToken, Task> action, bool showSuccess = true)
+    private void MarkSettingsDirty()
+    {
+        if (_loading) return;
+        _settingsDirty = true;
+        _saveState.Text = "有未保存的修改 · 立即备份也会保存设置";
+    }
+
+    private void MarkSettingsSaved()
+    {
+        _settingsDirty = false;
+        RefreshStatus();
+    }
+
+    private void AddLog(string text)
+    {
+        _logEntries.Add($"{DateTime.Now:HH:mm:ss}  {text}");
+        if (_logEntries.Count > 60) _logEntries.RemoveAt(0);
+        _logText.Text = string.Join(Environment.NewLine, _logEntries.AsEnumerable().Reverse());
+    }
+
+    private async Task RunAsync(Func<CancellationToken, Task> action, bool showSuccess = true, string? successMessage = null)
     {
         if (_operationCts != null || _controller.IsBusy)
         {
@@ -121,12 +233,13 @@ public sealed partial class BackupSettingsView : UserControl
         }
         using var cancellation = new CancellationTokenSource();
         _operationCts = cancellation;
+        _operationDismissed = false;
         _feedback.IsOpen = false;
         RefreshStatus();
         try
         {
             await action(cancellation.Token);
-            if (showSuccess) ShowMessage("操作完成。", InfoBarSeverity.Success);
+            if (showSuccess && !_feedback.IsOpen && !_operationDismissed) ShowMessage(successMessage ?? "操作已完成。", InfoBarSeverity.Success);
         }
         catch (OperationCanceledException)
         {
@@ -150,27 +263,15 @@ public sealed partial class BackupSettingsView : UserControl
         _feedback.Severity = severity;
         _feedback.Message = message;
         _feedback.IsOpen = true;
+        AddLog(message);
     }
 
-    private Button ActionButton(string text, Func<CancellationToken, Task> action, bool trackBusy = true)
+    private Button ActionButton(string text, Func<CancellationToken, Task> action, bool trackBusy = true, string? successMessage = null)
     {
         var button = new Button { Content = text };
-        button.Click += async (_, _) => await RunAsync(action);
+        button.Click += async (_, _) => await RunAsync(action, successMessage: successMessage ?? $"{text}已完成。");
         if (trackBusy) _operationControls.Add(button);
         return button;
-    }
-
-    private PivotItem Tab(string title, StackPanel panel, bool configuration = false)
-    {
-        var scroll = new ScrollViewer
-        {
-            Content = panel,
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Padding = new Thickness(0, 8, 16, 16)
-        };
-        if (configuration) _configurationTabs.Add(scroll);
-        return new PivotItem { Header = title, Content = scroll };
     }
 
     private async Task<ContentDialogResult> DialogAsync(string title, UIElement content, string primary = "确定", string close = "取消")
@@ -191,14 +292,15 @@ public sealed partial class BackupSettingsView : UserControl
             CloseButtonText = close,
             DefaultButton = ContentDialogButton.Close
         };
-        dialog.Resources["ContentDialogMinWidth"] = 500d;
+        dialog.Closed += (_, args) => { if (args.Result == ContentDialogResult.None) _operationDismissed = true; };
+        dialog.Resources["ContentDialogMinWidth"] = Math.Min(500d, Math.Max(280d, (XamlRoot?.Size.Width ?? 760) - 48));
         dialog.Resources["ContentDialogMaxWidth"] = 760d;
         dialog.Resources["ContentDialogMaxHeight"] = 680d;
         return dialog;
     }
 
     private static StackPanel Stack(double spacing = 12) => new() { Spacing = spacing };
-    private static StackPanel Row() => new() { Orientation = Orientation.Horizontal, Spacing = 8 };
+    private static Panel Row() => new ActionRow();
     private static TextBlock Note(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap, Opacity = .8 };
     private static TextBlock Heading(string text, string style = "SubtitleTextBlockStyle")
     {

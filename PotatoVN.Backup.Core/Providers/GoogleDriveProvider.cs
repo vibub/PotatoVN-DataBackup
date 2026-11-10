@@ -133,7 +133,7 @@ public sealed class GoogleDriveProvider : OAuthProviderBase
     {
         if (_rootId is not null) return _rootId;
         var parent = "root";
-        foreach (var name in RemotePaths.Normalize(Profile.RemotePath + "/PotatoVN-DataBackup").Split('/'))
+        foreach (var name in RemotePaths.Normalize(Profile.RemotePath + "/" + Profile.RepositoryFolder).Split('/'))
             parent = await EnsureChildDirectoryAsync(parent, name, token).ConfigureAwait(false);
         _directories[""] = parent;
         return _rootId = parent;

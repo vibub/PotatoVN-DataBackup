@@ -25,7 +25,7 @@ public sealed class WebDavProvider : IBackupProvider
         _profile = profile;
         _secrets = secrets;
         _endpoint = endpoint;
-        _root = RemotePaths.Normalize(profile.RemotePath + "/PotatoVN-DataBackup");
+        _root = RemotePaths.Normalize(profile.RemotePath + "/" + profile.RepositoryFolder);
         _http = http ?? ProviderHttp.CreateClient();
         _ownsHttp = http is null;
     }
