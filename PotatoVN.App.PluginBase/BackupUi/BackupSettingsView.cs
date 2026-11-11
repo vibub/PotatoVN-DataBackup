@@ -22,6 +22,7 @@ public sealed partial class BackupSettingsView : UserControl
     private readonly TextBlock _activeChannel = Note("");
     private readonly TextBlock _saveState = Note("设置已保存");
     private readonly InfoBar _feedback = new() { IsClosable = true };
+    private readonly DispatcherTimer _feedbackTimer = new() { Interval = TimeSpan.FromSeconds(4) };
     private readonly ProgressBar _progress = new() { IsIndeterminate = true, Visibility = Visibility.Collapsed };
     private readonly Button _cancel = new() { Content = "取消操作", Visibility = Visibility.Collapsed };
     private readonly Pivot _navigation = new() { HorizontalAlignment = HorizontalAlignment.Stretch };
@@ -121,11 +122,14 @@ public sealed partial class BackupSettingsView : UserControl
         Grid.SetRow(footer, 3);
         root.Children.Add(footer);
         Content = root;
-        _feedback.Closed += (_, _) => { _hasStatus = false; UpdateFeedbackVisibility(); };
+        _feedbackTimer.Tick += (_, _) => { _feedbackTimer.Stop(); _feedback.IsOpen = false; };
+        _feedback.Closed += (_, _) => { _feedbackTimer.Stop(); _hasStatus = false; UpdateFeedbackVisibility(); };
 
         Loaded += OnLoaded;
         Unloaded += (_, _) =>
         {
+            _feedbackTimer.Stop();
+            _feedback.IsOpen = false;
             if (_subscribed) _controller.StateChanged -= ControllerStateChanged;
             _subscribed = false;
             if (_viewportHost != null) _viewportHost.SizeChanged -= HostSizeChanged;
@@ -288,6 +292,7 @@ public sealed partial class BackupSettingsView : UserControl
 
     private void ShowMessage(string message, InfoBarSeverity severity)
     {
+        _feedbackTimer.Stop();
         _feedback.Severity = severity;
         _feedback.Message = message;
         _feedbackPageIndex = _operationCts != null ? _operationPageIndex : _navigation.SelectedIndex;
@@ -295,6 +300,7 @@ public sealed partial class BackupSettingsView : UserControl
         _feedback.IsOpen = true;
         UpdateFeedbackVisibility();
         AddLog(message);
+        if (severity is InfoBarSeverity.Success or InfoBarSeverity.Informational) _feedbackTimer.Start();
     }
 
     private Button ActionButton(string text, Func<CancellationToken, Task> action, bool trackBusy = true, string? successMessage = null)

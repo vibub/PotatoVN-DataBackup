@@ -16,7 +16,9 @@ public sealed partial class BackupSettingsView
 {
     private readonly ListView _saveGame = new() { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 360, HorizontalContentAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _saveGameSearch = TextInput("搜索存档游戏", "游戏名、目录或来源 ID");
-    private readonly ComboBox _saveGameFilter = new() { Header = "筛选游戏", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly CheckBox _saveGameConfigured = new() { Content = "已配置存档" };
+    private readonly CheckBox _saveGameUnconfigured = new() { Content = "未配置存档" };
+    private readonly CheckBox _saveGameLocal = new() { Content = "本机目录有效" };
     private readonly TextBlock _saveGameCount = Note("");
     private readonly TextBlock _saveGameEmpty = Note("");
     private readonly TextBlock _saveGameTitle = Heading("", "BodyStrongTextBlockStyle");
@@ -38,12 +40,11 @@ public sealed partial class BackupSettingsView
     {
         var toolbar = Stack(8);
         toolbar.Children.Add(_saveGameSearch);
-        AddChoice(_saveGameFilter, "all", "全部游戏");
-        AddChoice(_saveGameFilter, "configured", "已配置存档");
-        AddChoice(_saveGameFilter, "unconfigured", "未配置存档");
-        AddChoice(_saveGameFilter, "local", "本机目录有效");
-        _saveGameFilter.SelectedIndex = 0;
-        toolbar.Children.Add(_saveGameFilter);
+        var filters = Row();
+        filters.Children.Add(_saveGameConfigured);
+        filters.Children.Add(_saveGameUnconfigured);
+        filters.Children.Add(_saveGameLocal);
+        toolbar.Children.Add(filters);
         toolbar.Children.Add(_saveGameCount);
         _saveGameBrowser.Children.Add(_saveGame);
         _saveGameBrowser.Children.Add(_saveGameEmpty);
@@ -112,14 +113,27 @@ public sealed partial class BackupSettingsView
             RefreshSaveLocations();
         };
         _saveGameSearch.TextChanged += (_, _) => RenderSaveGameChoices();
-        _saveGameFilter.SelectionChanged += (_, _) => RenderSaveGameChoices();
+        void FilterChanged(object sender, RoutedEventArgs args)
+        {
+            if (ReferenceEquals(sender, _saveGameConfigured) && _saveGameConfigured.IsChecked == true)
+                _saveGameUnconfigured.IsChecked = false;
+            else if (ReferenceEquals(sender, _saveGameUnconfigured) && _saveGameUnconfigured.IsChecked == true)
+                _saveGameConfigured.IsChecked = false;
+            RenderSaveGameChoices();
+        }
+        foreach (CheckBox filter in new[] { _saveGameConfigured, _saveGameUnconfigured, _saveGameLocal })
+        {
+            filter.Checked += FilterChanged;
+            filter.Unchecked += FilterChanged;
+        }
         RefreshSaveGameChoices();
     }
 
     private async Task AddPickedSaveLocationAsync(bool isFile)
     {
-        if (_saveGameId is not Guid) throw new InvalidOperationException("请先选择一个游戏。");
-        string? path = await PickPathAsync(isFile);
+        if (_saveGameId is not Guid gameId) throw new InvalidOperationException("请先选择一个游戏。");
+        string? gameDirectory = _controller.GetGames().First(game => game.Id == gameId).LocalDirectory;
+        string? path = await PickPathAsync(isFile, gameDirectory);
         if (path != null) await EditSaveLocationAsync(null, path, isFile);
         else _operationDismissed = true;
     }
@@ -135,15 +149,11 @@ public sealed partial class BackupSettingsView
 
     private void RenderSaveGameChoices()
     {
-        string filter = Choice(_saveGameFilter) as string ?? "all";
         var counts = _controller.Settings.SaveConfigs.ToDictionary(config => config.GameId, config => config.Locations.Count);
-        GameIdentity[] visible = _saveGames.Where(game => GameSearch.Matches(_saveGameSearch.Text, game) && (filter switch
-        {
-            "configured" => counts.GetValueOrDefault(game.Id) > 0,
-            "unconfigured" => counts.GetValueOrDefault(game.Id) == 0,
-            "local" => !string.IsNullOrWhiteSpace(game.LocalDirectory) && Directory.Exists(game.LocalDirectory),
-            _ => true
-        })).ToArray();
+        GameIdentity[] visible = _saveGames.Where(game => GameSearch.Matches(_saveGameSearch.Text, game) &&
+            (_saveGameConfigured.IsChecked != true || counts.GetValueOrDefault(game.Id) > 0) &&
+            (_saveGameUnconfigured.IsChecked != true || counts.GetValueOrDefault(game.Id) == 0) &&
+            (_saveGameLocal.IsChecked != true || Directory.Exists(game.LocalDirectory))).ToArray();
         _refreshingSaveGames = true;
         // 只改状态文字时复用原行，保留列表的滚动位置。
         bool sameRows = _saveGame.Items.OfType<ListViewItem>().Select(item => ((GameIdentity)item.Tag).Id).SequenceEqual(visible.Select(game => game.Id));
@@ -276,8 +286,8 @@ public sealed partial class BackupSettingsView
         body.Children.Add(Note($"游戏：{game.Name}"));
         body.Children.Add(path);
         var browse = Row();
-        browse.Children.Add(BrowsePathButton(path, false, () => isFile.IsChecked = false));
-        browse.Children.Add(BrowsePathButton(path, true, () => isFile.IsChecked = true));
+        browse.Children.Add(BrowsePathButton(path, false, () => isFile.IsChecked = false, game.LocalDirectory));
+        browse.Children.Add(BrowsePathButton(path, true, () => isFile.IsChecked = true, game.LocalDirectory));
         body.Children.Add(browse);
         body.Children.Add(isFile);
         body.Children.Add(preview);

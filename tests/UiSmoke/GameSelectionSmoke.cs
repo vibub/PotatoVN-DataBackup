@@ -25,7 +25,9 @@ public sealed partial class SmokeApp
         TextBox search = Field<TextBox>(view, "_gameSearch");
         TextBox saveSearch = Field<TextBox>(view, "_saveGameSearch");
         CheckBox only = Field<CheckBox>(view, "_onlySelectedGames");
-        ComboBox filter = Field<ComboBox>(view, "_saveGameFilter");
+        CheckBox configured = Field<CheckBox>(view, "_saveGameConfigured");
+        CheckBox unconfigured = Field<CheckBox>(view, "_saveGameUnconfigured");
+        CheckBox local = Field<CheckBox>(view, "_saveGameLocal");
         try
         {
             InvokeButton(FindButton(view, "刷新游戏列表"));
@@ -88,18 +90,27 @@ public sealed partial class SmokeApp
             await Task.Delay(80);
             await WaitForUiAsync(() => saveGames.Items.Count == 66, "存档列表未复原。");
             controller.Settings.SaveConfigs.Add(new GameSaveConfig { GameId = chosen.Id, Locations = [new SaveLocation { RelativePath = "save" }] });
-            filter.SelectedIndex = 1;
+            configured.IsChecked = true;
             await WaitForUiAsync(() => saveGames.Items.Count == 1, "已配置筛选未更新。");
             Check(saveGames.Items.Count == 1 && ((GameIdentity)((ListViewItem)saveGames.Items[0]).Tag).Id == chosen.Id,
                 "已配置筛选应只包含存在确认存档位置的游戏。");
-            filter.SelectedIndex = 2;
+            unconfigured.IsChecked = true;
+            Check(configured.IsChecked == false, "勾选未配置时应取消已配置。");
             await WaitForUiAsync(() => saveGames.Items.Count == 65, "未配置筛选未更新。");
             Check(saveGames.Items.Count == 65, "未配置筛选不应包含已有位置的游戏。");
-            filter.SelectedIndex = 3;
+            configured.IsChecked = true;
+            Check(unconfigured.IsChecked == false, "勾选已配置时应取消未配置。");
+            local.IsChecked = true;
+            await WaitForUiAsync(() => saveGames.Items.Count == 0, "已配置与本机目录的组合筛选未更新。");
+            Check(configured.IsChecked == true && local.IsChecked == true, "目录条件可与已配置同时勾选。");
+            unconfigured.IsChecked = true;
+            Check(configured.IsChecked == false && local.IsChecked == true, "切换配置条件应保留目录条件。");
             await WaitForUiAsync(() => saveGames.Items.Count == 1 &&
                 ((GameIdentity)((ListViewItem)saveGames.Items[0]).Tag).Id == games[0].Id, "本机目录筛选未更新。");
             Check(saveGames.Items.Count == 1, "本机目录有效筛选应使用实际存在的目录。");
-            filter.SelectedIndex = 0;
+            configured.IsChecked = false;
+            unconfigured.IsChecked = false;
+            local.IsChecked = false;
             saveSearch.Text = "没有结果";
             await Task.Delay(80);
             await WaitForUiAsync(() => saveGames.Items.Count == 0 &&
@@ -109,7 +120,7 @@ public sealed partial class SmokeApp
             saveSearch.Text = "";
             await Task.Delay(80);
             await WaitForUiAsync(() => saveGames.Items.Count == 66, "存档列表未复原。");
-            results.Add("PASS save-game-search: master/detail stays on explicit ID when filtered out; refresh retains query; configured/unconfigured/valid-directory filters; empty state");
+            results.Add("PASS save-game-search: master/detail stays on explicit ID when filtered out; refresh retains query; mutually exclusive configured/unconfigured checkboxes; valid-directory intersection; no filters shows all; empty state");
 
             search.Text = "";
             await Task.Delay(80);
@@ -150,7 +161,9 @@ public sealed partial class SmokeApp
             await Task.Delay(80);
             saveSearch.Text = "";
             await Task.Delay(80);
-            filter.SelectedIndex = 0;
+            configured.IsChecked = false;
+            unconfigured.IsChecked = false;
+            local.IsChecked = false;
             only.IsChecked = false;
             all.IsChecked = originalAll;
             InvokeButton(FindButton(view, "刷新游戏列表"));
