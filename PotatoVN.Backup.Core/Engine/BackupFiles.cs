@@ -107,7 +107,9 @@ public sealed class SettingsStore(string localRoot)
         if (settings.FormatVersion != 1) throw new InvalidDataException("不支持的插件配置版本，请先升级插件。");
         if (!double.IsFinite(settings.IntervalHours) || settings.IntervalHours < 0.05 || settings.IntervalHours > 8760 ||
             settings.ExitDelaySeconds is < 0 or > 3600 || settings.KeepSnapshots < 1 || settings.KeepSaves < 1 ||
-            (settings.Content & ~BackupContent.All) != 0 || settings.Profiles is null || settings.SelectedGameIds is null ||
+            (settings.Content & ~BackupContent.All) != 0 ||
+            (settings.AutomaticContent is { } automaticContent && (automaticContent & ~BackupContent.All) != 0) ||
+            settings.Profiles is null || settings.SelectedGameIds is null ||
             settings.SaveConfigs is null || settings.GameMappings is null || settings.LibraryMappings is null || settings.CustomSavePaths is null ||
             settings.Profiles.Any(p => p is null || p.Id == Guid.Empty || !Enum.IsDefined(p.Kind)) ||
             settings.SaveConfigs.Any(c => c is null || c.Locations is null || c.Locations.Any(l => l is null || !Enum.IsDefined(l.BaseKind))))

@@ -53,9 +53,10 @@ public static class SoftwareBackupCodec
     ];
 
     public static async Task<SoftwarePackage> CreateAsync(HostExport export, BackupSettings settings,
-        IReadOnlyList<GameIdentity> games, string workDirectory, CancellationToken ct = default)
+        IReadOnlyList<GameIdentity> games, string workDirectory, CancellationToken ct = default, BackupContent? content = null)
     {
-        var selectedLocal = games.Where(g => settings.AllGames || settings.SelectedGameIds.Contains(g.Id)).ToList();
+        BackupContent selectedContent = content ?? settings.Content;
+        var selectedLocal = games.Where(settings.IncludesGame).ToList();
         var canonicalIds = selectedLocal.ToDictionary(g => g.Id, g =>
             settings.GameMappings.LastOrDefault(m => m.LocalGameId == g.Id)?.BackupGameId ?? g.Id);
         var result = new SoftwarePackage
@@ -68,7 +69,7 @@ public static class SoftwareBackupCodec
         };
         if (result.Games.GroupBy(g => g.Id).Any(group => group.Count() > 1))
             throw new InvalidOperationException("多个本地游戏映射到同一个备份身份，请先修正游戏对应关系。");
-        if ((settings.Content & ~BackupContent.Saves) == BackupContent.None) return result;
+        if ((selectedContent & ~BackupContent.Saves) == BackupContent.None) return result;
         var native = Path.Combine(workDirectory, "native");
         var data = Path.Combine(workDirectory, "data");
         var media = Path.Combine(workDirectory, "media");
@@ -76,7 +77,7 @@ public static class SoftwareBackupCodec
         await BackupFiles.ExtractAsync(export.ArchivePath, native, ct);
         var chosen = selectedLocal.Select(g => g.Id).ToHashSet();
         var rawGames = await ReadArrayAsync(Path.Combine(native, "data.galgames.json"), ct);
-        var fields = SelectedFields(settings.Content);
+        var fields = SelectedFields(selectedContent);
         var projected = new List<SoftwareGame>();
         foreach (var raw in rawGames.OfType<JsonObject>())
         {
@@ -87,20 +88,20 @@ public static class SoftwareBackupCodec
             await CopyReferencedMediaAsync(item.Fields, native, media, null, ct);
             projected.Add(item);
         }
-        await BackupFiles.WriteJsonAsync(Path.Combine(data, "package.json"), new { FormatVersion = 1, Content = settings.Content }, ct);
+        await BackupFiles.WriteJsonAsync(Path.Combine(data, "package.json"), new { FormatVersion = 1, Content = selectedContent }, ct);
         await BackupFiles.WriteJsonAsync(Path.Combine(data, "games.json"), projected, ct);
         foreach (var (flag, portable, source) in Ancillary)
         {
-            if (!settings.Content.HasFlag(flag) || !File.Exists(Path.Combine(native, source))) continue;
+            if (!selectedContent.HasFlag(flag) || !File.Exists(Path.Combine(native, source))) continue;
             var document = await ReadNodeAsync(Path.Combine(native, source), ct);
             if (document is null) continue;
             StripSensitiveFields(document);
-            if (!settings.AllGames) FilterReferences(document, chosen);
+            if (!settings.AllGames || !settings.IncludeLocalGames || !settings.IncludeNonLocalGames) FilterReferences(document, chosen);
             RewriteReferences(document, canonicalIds);
             await CopyReferencedMediaAsync(document, native, media, null, ct);
             await WriteNodeAsync(Path.Combine(data, portable), document, ct);
         }
-        if (settings.Content.HasFlag(BackupContent.Settings))
+        if (selectedContent.HasFlag(BackupContent.Settings))
             await BackupFiles.WriteJsonAsync(Path.Combine(data, "settings.json"), export.Settings
                 .Where(p => PortableSettingKeys.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value), ct);
         result.DataPath = Path.Combine(workDirectory, "data.zip");

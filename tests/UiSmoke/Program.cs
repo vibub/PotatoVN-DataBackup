@@ -237,7 +237,7 @@ public sealed partial class SmokeApp : Application
 
     private static void AssertPageAlignment(ScrollViewer scroll, Button save, int pageIndex)
     {
-        string[] titles = ["连接云盘", "选择备份内容", "自动备份", "从云端恢复", "待恢复存档", "关联这台电脑的游戏库"];
+        string[] titles = ["连接云盘", "手动备份内容", "自动备份", "从云端恢复", "待恢复存档", "关联这台电脑的游戏库"];
         TextBlock title = FindAll<TextBlock>(scroll).Single(block => block.Text == titles[pageIndex]);
         var page = (FrameworkElement)scroll.Content;
         double titleLeft = title.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point()).X;
@@ -413,20 +413,23 @@ public sealed partial class SmokeApp : Application
     private static async Task CheckSettingsCommitAsync(BackupSettingsView view, DemoController controller, List<string> results)
     {
         var checks = Field<Dictionary<BackupContent, CheckBox>>(view, "_contentChecks");
+        var automaticChecks = Field<Dictionary<BackupContent, CheckBox>>(view, "_automaticContentChecks");
         CheckBox covers = checks[BackupContent.Covers];
         ToggleSwitch timer = Field<ToggleSwitch>(view, "_timer");
         BackupContent contentBefore = controller.Settings.Content;
+        BackupContent automaticBefore = controller.Settings.GetBackupContent(true);
         bool timerBefore = controller.Settings.TimerEnabled;
         covers.IsChecked = !contentBefore.HasFlag(BackupContent.Covers);
+        foreach (var pair in automaticChecks) pair.Value.IsChecked = pair.Key == BackupContent.Saves;
         timer.IsOn = !timerBefore;
-        Check(controller.Settings.Content == contentBefore && controller.Settings.TimerEnabled == timerBefore,
+        Check(controller.Settings.Content == contentBefore && controller.Settings.GetBackupContent(true) == automaticBefore && controller.Settings.TimerEnabled == timerBefore,
             "编辑内容与自动开关时不应提前改变已生效配置。");
         Check(Field<TextBlock>(view, "_saveState").Text.Contains("未保存"), "编辑后应显示未保存状态。");
         await SaveSettingsAsync(view);
-        Check(controller.Settings.Content.HasFlag(BackupContent.Covers) == covers.IsChecked && controller.Settings.TimerEnabled == timer.IsOn,
+        Check(controller.Settings.Content.HasFlag(BackupContent.Covers) == covers.IsChecked && controller.Settings.AutomaticContent == BackupContent.Saves && controller.Settings.TimerEnabled == timer.IsOn,
             "保存后应提交内容和自动备份设置。");
         Check(Field<TextBlock>(view, "_saveState").Text == "设置已保存", "提交成功后应显示设置已保存。");
-        results.Add("PASS settings-commit: content and automation edits remain drafts until save; successful save clears dirty state");
+        results.Add("PASS settings-commit: manual content and saves-only automatic content stay independent; both remain drafts until save");
     }
 
     private static async Task CheckSaveSuggestionAsync(BackupSettingsView view, DemoController controller, List<string> results)

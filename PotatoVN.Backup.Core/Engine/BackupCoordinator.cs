@@ -32,7 +32,7 @@ public sealed partial class BackupCoordinator
     private static string NewId() => DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "_" + Guid.NewGuid().ToString("N");
     private string Work() { string path = Path.Combine(_root, "work", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(path); return path; }
 
-    public Task<SnapshotManifest> BackupAsync(CancellationToken ct = default) => BackupIncrementalAsync(ct);
+    public Task<SnapshotManifest> BackupAsync(CancellationToken ct = default, bool automatic = false) => BackupIncrementalAsync(ct, automatic);
 
     private async Task<SnapshotManifest> BackupLegacyAsync(CancellationToken ct = default)
     {
@@ -53,7 +53,7 @@ public sealed partial class BackupCoordinator
                     throw new InvalidDataException("云端仓库格式不受支持，请使用匹配版本的插件。");
             }
             IReadOnlyList<GameIdentity> all = _host.GetGames();
-            List<GameIdentity> selected = all.Where(g => Settings.AllGames || Settings.SelectedGameIds.Contains(g.Id)).ToList();
+            List<GameIdentity> selected = all.Where(Settings.IncludesGame).ToList();
             if (Settings.Content.HasFlag(BackupContent.Saves) && selected.Any(g => g.IsRunning))
                 throw new InvalidOperationException("所选游戏仍在运行，已延后本次备份，请在游戏退出后重试。");
             SnapshotManifest snapshot = new()

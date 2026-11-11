@@ -19,7 +19,10 @@ public sealed partial class BackupSettingsView
         (BackupContent.Home, "主页布局"), (BackupContent.Settings, "常规设置"), (BackupContent.Saves, "游戏存档")
     ];
     private readonly Dictionary<BackupContent, CheckBox> _contentChecks = new();
-    private readonly CheckBox _allGames = new() { Content = "备份全部游戏（含非本地）" };
+    private readonly Dictionary<BackupContent, CheckBox> _automaticContentChecks = new();
+    private readonly CheckBox _localGames = new() { Content = "本地游戏" };
+    private readonly CheckBox _nonLocalGames = new() { Content = "非本地游戏" };
+    private readonly CheckBox _specificGames = new() { Content = "仅备份指定游戏" };
     private readonly ListView _gameSelection = new() { SelectionMode = ListViewSelectionMode.Multiple, IsMultiSelectCheckBoxEnabled = true, MaxHeight = 260 };
     private readonly HashSet<Guid> _selectedGameIds = new();
     private readonly TextBox _gameSearch = TextInput("搜索备份游戏", "游戏名、目录或来源 ID");
@@ -40,34 +43,64 @@ public sealed partial class BackupSettingsView
     private StackPanel BuildContentTab()
     {
         var panel = Stack();
-        panel.Children.Add(Heading("选择备份内容"));
-        panel.Children.Add(Note("手动和自动备份共用以下设置。"));
+        panel.Children.Add(Heading("手动备份内容"));
+        BuildContentChoices(panel, _contentChecks, _controller.Settings.Content);
+        panel.Children.Add(Heading("游戏范围"));
+        var scopeChoices = Row();
+        _localGames.IsChecked = _controller.Settings.IncludeLocalGames;
+        _nonLocalGames.IsChecked = _controller.Settings.IncludeNonLocalGames;
+        _specificGames.IsChecked = !_controller.Settings.AllGames;
+        scopeChoices.Children.Add(_localGames);
+        scopeChoices.Children.Add(_nonLocalGames);
+        panel.Children.Add(scopeChoices);
+        panel.Children.Add(Note("未关联有效游戏目录的条目属于非本地游戏。"));
+        panel.Children.Add(_specificGames);
+        _selectedGameIds.UnionWith(_controller.Settings.SelectedGameIds);
+        RefreshGameSelection(true);
+        foreach (CheckBox check in new[] { _localGames, _nonLocalGames })
+        {
+            check.Checked += (_, _) => { RefreshGameSelection(); MarkSettingsDirty(); };
+            check.Unchecked += (_, _) => { RefreshGameSelection(); MarkSettingsDirty(); };
+        }
+        _specificGames.Checked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
+        _specificGames.Unchecked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
+        BuildGameSelection(panel);
+        panel.Children.Add(ActionButton("刷新游戏列表", _ =>
+        {
+            RefreshGameSelection(true);
+            RefreshSaveGameChoices();
+            return Task.CompletedTask;
+        }));
+        panel.Children.Add(Heading("各游戏存档位置"));
+        panel.Children.Add(Note("支持添加多个文件夹或文件。"));
+        BuildSaveLocationControls(panel);
+        return panel;
+    }
+
+    private void BuildContentChoices(StackPanel panel, Dictionary<BackupContent, CheckBox> checks, BackupContent content)
+    {
         var choices = Row();
         foreach ((BackupContent flag, string label) in ContentChoices)
         {
-            var check = new CheckBox { Content = new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap }, Width = 264, IsChecked = _controller.Settings.Content.HasFlag(flag) };
+            var check = new CheckBox { Content = new TextBlock { Text = label, TextWrapping = TextWrapping.Wrap }, Width = 264, IsChecked = content.HasFlag(flag) };
             check.Checked += (_, _) => MarkSettingsDirty();
             check.Unchecked += (_, _) => MarkSettingsDirty();
-            _contentChecks.Add(flag, check);
+            checks.Add(flag, check);
             choices.Children.Add(check);
         }
         var selectActions = Row();
         var all = new Button { Content = "全选" };
-        all.Click += (_, _) => { foreach (CheckBox check in _contentChecks.Values) check.IsChecked = true; };
+        all.Click += (_, _) => { foreach (CheckBox check in checks.Values) check.IsChecked = true; };
         var none = new Button { Content = "全不选" };
-        none.Click += (_, _) => { foreach (CheckBox check in _contentChecks.Values) check.IsChecked = false; };
+        none.Click += (_, _) => { foreach (CheckBox check in checks.Values) check.IsChecked = false; };
         selectActions.Children.Add(all);
         selectActions.Children.Add(none);
         panel.Children.Add(selectActions);
         panel.Children.Add(choices);
-        panel.Children.Add(Heading("游戏范围"));
-        _allGames.IsChecked = _controller.Settings.AllGames;
-        panel.Children.Add(_allGames);
-        _selectedGameIds.UnionWith(_controller.Settings.SelectedGameIds);
-        RefreshGameSelection(true);
-        UpdateGameScope();
-        _allGames.Checked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
-        _allGames.Unchecked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
+    }
+
+    private void BuildGameSelection(StackPanel panel)
+    {
         _gameSelection.HorizontalContentAlignment = HorizontalAlignment.Stretch;
         _gameSelection.SelectionChanged += (_, args) =>
         {
@@ -100,16 +133,6 @@ public sealed partial class BackupSettingsView
         panel.Children.Add(_gameScopeNote);
         panel.Children.Add(_manualGameScope);
         UpdateGameScope();
-        panel.Children.Add(ActionButton("刷新游戏列表", _ =>
-        {
-            RefreshGameSelection(true);
-            RefreshSaveGameChoices();
-            return Task.CompletedTask;
-        }));
-        panel.Children.Add(Heading("各游戏存档位置"));
-        panel.Children.Add(Note("支持添加多个文件夹或文件。"));
-        BuildSaveLocationControls(panel);
-        return panel;
     }
 
     private void RefreshGameSelection(bool reload = false)
@@ -132,7 +155,7 @@ public sealed partial class BackupSettingsView
     }
 
     private IEnumerable<GameIdentity> FilteredScopeGames() =>
-        _scopeGames.Where(game => GameSearch.Matches(_gameSearch.Text, game) &&
+        _scopeGames.Where(game => IncludesGameCategory(game) && GameSearch.Matches(_gameSearch.Text, game) &&
             (_onlySelectedGames.IsChecked != true || _selectedGameIds.Contains(game.Id)))
             .OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase);
 
@@ -149,12 +172,16 @@ public sealed partial class BackupSettingsView
 
     private void UpdateGameScope()
     {
-        bool all = _allGames.IsChecked == true;
+        bool all = _specificGames.IsChecked != true;
         _manualGameScope.Visibility = all ? Visibility.Collapsed : Visibility.Visible;
         _gameSelection.IsEnabled = !all;
-        _gameScopeNote.Text = all ? "包含以后新增的游戏" :
-            $"已选 {_selectedGameIds.Count} 款游戏，当前显示 {_gameSelection.Items.Count} 款";
+        int count = _scopeGames.Count(game => IncludesGameCategory(game) && (all || _selectedGameIds.Contains(game.Id)));
+        _gameScopeNote.Text = all ? $"当前范围共 {count} 款，包含以后新增的游戏" :
+            $"当前范围已选 {count} 款游戏，当前显示 {_gameSelection.Items.Count} 款";
     }
+
+    private bool IncludesGameCategory(GameIdentity game) =>
+        (System.IO.Directory.Exists(game.LocalDirectory) ? _localGames : _nonLocalGames).IsChecked == true;
 
     private static ListViewItem GameListItem(GameIdentity game, string state, StatusTone tone = StatusTone.Neutral, bool showUnlinked = false)
     {
@@ -188,6 +215,9 @@ public sealed partial class BackupSettingsView
         panel.Children.Add(_interval);
         panel.Children.Add(_onExit);
         panel.Children.Add(_exitDelay);
+        panel.Children.Add(Heading("自动备份内容"));
+        panel.Children.Add(Note("定时和游戏退出后备份使用以下选择；游戏范围与存档位置在“备份内容”设置。"));
+        BuildContentChoices(panel, _automaticContentChecks, _controller.Settings.GetBackupContent(true));
         var advanced = Stack();
         advanced.Children.Add(Note("超过保留数量时清理旧版本，仍被快照引用的存档会保留。"));
         foreach (UIElement item in new UIElement[] { _deviceName, _keepSnapshots, _keepSaves }) advanced.Children.Add(item);
@@ -213,19 +243,31 @@ public sealed partial class BackupSettingsView
             !double.IsFinite(_keepSaves.Value) || _keepSaves.Value < 1 || _keepSaves.Value > 10000)
             throw new InvalidOperationException("保留版本数应为 1 至 10000。");
         BackupContent content = _contentChecks.Where(pair => pair.Value.IsChecked == true).Aggregate(BackupContent.None, (flags, pair) => flags | pair.Key);
+        BackupContent automaticContent = _automaticContentChecks.Where(pair => pair.Value.IsChecked == true).Aggregate(BackupContent.None, (flags, pair) => flags | pair.Key);
         if (content == BackupContent.None)
             throw new InvalidOperationException("请到“备份内容”至少勾选一种需要备份的内容。");
-        if (_allGames.IsChecked != true && _selectedGameIds.Count == 0 &&
-            (content & ~(BackupContent.Settings | BackupContent.Home)) != BackupContent.None)
-            throw new InvalidOperationException("请到“备份内容”勾选至少一款游戏，或开启“备份全部游戏”。");
+        bool automaticEnabled = _timer.IsOn || _onExit.IsOn;
+        if (automaticEnabled && automaticContent == BackupContent.None)
+            throw new InvalidOperationException("请到“自动备份”至少勾选一种需要备份的内容。");
+        BackupContent enabledContent = content | (automaticEnabled ? automaticContent : BackupContent.None);
+        if ((enabledContent & ~(BackupContent.Settings | BackupContent.Home)) != BackupContent.None)
+        {
+            if (_localGames.IsChecked != true && _nonLocalGames.IsChecked != true)
+                throw new InvalidOperationException("请到“备份内容”勾选本地游戏或非本地游戏。");
+            if (_specificGames.IsChecked == true && !_scopeGames.Any(game => IncludesGameCategory(game) && _selectedGameIds.Contains(game.Id)))
+                throw new InvalidOperationException("请到“备份内容”勾选当前范围内的游戏，或取消“仅备份指定游戏”。");
+        }
         if ((_timer.IsOn || _onExit.IsOn) && _controller.Settings.ActiveProfileId == null && !_profileDirty)
             throw new InvalidOperationException("请先到“连接云盘”填写连接信息并测试连接，再开启自动备份。");
         BackupSettings settings = _controller.Settings;
-        var previous = (settings.Content, settings.AllGames, settings.SelectedGameIds, settings.TimerEnabled,
+        var previous = (settings.Content, settings.AutomaticContent, settings.AllGames, settings.IncludeLocalGames, settings.IncludeNonLocalGames, settings.SelectedGameIds, settings.TimerEnabled,
             settings.OnGameExitEnabled, settings.IntervalHours, settings.ExitDelaySeconds,
             settings.KeepSnapshots, settings.KeepSaves, settings.DeviceName);
         settings.Content = content;
-        settings.AllGames = _allGames.IsChecked == true;
+        settings.AutomaticContent = automaticContent;
+        settings.AllGames = _specificGames.IsChecked != true;
+        settings.IncludeLocalGames = _localGames.IsChecked == true;
+        settings.IncludeNonLocalGames = _nonLocalGames.IsChecked == true;
         settings.SelectedGameIds = _selectedGameIds.ToList();
         _controller.Settings.TimerEnabled = _timer.IsOn;
         _controller.Settings.OnGameExitEnabled = _onExit.IsOn;
@@ -242,7 +284,7 @@ public sealed partial class BackupSettingsView
         }
         catch
         {
-            (settings.Content, settings.AllGames, settings.SelectedGameIds, settings.TimerEnabled,
+            (settings.Content, settings.AutomaticContent, settings.AllGames, settings.IncludeLocalGames, settings.IncludeNonLocalGames, settings.SelectedGameIds, settings.TimerEnabled,
                 settings.OnGameExitEnabled, settings.IntervalHours, settings.ExitDelaySeconds,
                 settings.KeepSnapshots, settings.KeepSaves, settings.DeviceName) = previous;
             throw;

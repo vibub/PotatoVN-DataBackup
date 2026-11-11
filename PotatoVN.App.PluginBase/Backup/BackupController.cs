@@ -68,6 +68,8 @@ public sealed class BackupController : IBackupUiController, IDisposable
         if (IsBusy) throw new InvalidOperationException("请等待当前任务结束后再保存配置。");
         if (!Settings.OnGameExitEnabled) _exitDue = null;
         if (Settings.Content == BackupContent.None) throw new InvalidOperationException("请至少勾选一种备份内容。");
+        if ((Settings.TimerEnabled || Settings.OnGameExitEnabled) && Settings.GetBackupContent(true) == BackupContent.None)
+            throw new InvalidOperationException("请至少勾选一种自动备份内容。");
         if (!double.IsFinite(Settings.IntervalHours) || Settings.IntervalHours < 0.05 || Settings.IntervalHours > 8760)
             throw new InvalidOperationException("定时间隔应在 0.05 至 8760 小时之间。");
         if (Settings.ExitDelaySeconds < 0 || Settings.ExitDelaySeconds > 3600 || Settings.KeepSnapshots < 1 || Settings.KeepSaves < 1)
@@ -101,9 +103,11 @@ public sealed class BackupController : IBackupUiController, IDisposable
         await provider.ProbeAsync(token); Status = "连接成功。";
     }, ct);
 
-    public Task BackupAsync(CancellationToken ct) => RunAsync("正在备份…", async token =>
+    public Task BackupAsync(CancellationToken ct) => BackupAsync(ct, false);
+
+    private Task BackupAsync(CancellationToken ct, bool automatic) => RunAsync("正在备份…", async token =>
     {
-        await _coordinator.BackupAsync(token);
+        await _coordinator.BackupAsync(token, automatic);
     }, ct);
 
     public async Task<IReadOnlyList<SnapshotManifest>> ListSnapshotsAsync(CancellationToken ct)
@@ -285,7 +289,7 @@ public sealed class BackupController : IBackupUiController, IDisposable
                     bool periodic = Settings.TimerEnabled && now - (Settings.LastSuccessfulBackupUtc ?? _lastAutoAttempt) >= TimeSpan.FromHours(Settings.IntervalHours);
                     if ((!exit && !periodic) || now - _lastAutoAttempt < TimeSpan.FromSeconds(60)) continue;
                     _exitDue = null; _lastAutoAttempt = now;
-                    await BackupAsync(_shutdown.Token);
+                    await BackupAsync(_shutdown.Token, true);
                 }
                 catch (OperationCanceledException) when (!_shutdown.IsCancellationRequested) { }
                 catch (Exception e) when (!_shutdown.IsCancellationRequested)

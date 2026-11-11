@@ -43,8 +43,11 @@ public sealed class BackupSettings
     public List<ProviderProfile> Profiles { get; set; } = [];
     public Guid? ActiveProfileId { get; set; }
     public BackupContent Content { get; set; } = BackupContent.All;
+    public BackupContent? AutomaticContent { get; set; }
     public List<Guid> SelectedGameIds { get; set; } = [];
     public bool AllGames { get; set; } = true;
+    public bool IncludeLocalGames { get; set; } = true;
+    public bool IncludeNonLocalGames { get; set; } = true;
     public bool TimerEnabled { get; set; }
     public double IntervalHours { get; set; } = 6;
     public bool OnGameExitEnabled { get; set; }
@@ -57,6 +60,13 @@ public sealed class BackupSettings
     public List<GameMatchMapping> GameMappings { get; set; } = [];
     public List<PendingLibraryMapping> LibraryMappings { get; set; } = [];
     [JsonIgnore] public RestoreMatchingDecisions? ActiveRestoreMatching { get; set; }
+
+    // 旧配置首次沿用原内容，保存页面后自动备份拥有独立选择。
+    public BackupContent GetBackupContent(bool automatic = false) => automatic ? AutomaticContent ?? Content : Content;
+
+    public bool IncludesGame(GameIdentity game) =>
+        (Directory.Exists(game.LocalDirectory) ? IncludeLocalGames : IncludeNonLocalGames) &&
+        (AllGames || SelectedGameIds.Contains(game.Id));
 }
 
 public sealed class GameIdentity

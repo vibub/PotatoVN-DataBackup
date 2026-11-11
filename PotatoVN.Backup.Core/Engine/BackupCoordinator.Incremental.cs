@@ -6,9 +6,10 @@ namespace PotatoVN.Backup.Core.Engine;
 public sealed partial class BackupCoordinator
 {
     // File-level v2 storage is the default; existing v1 archives remain readable.
-    public async Task<SnapshotManifest> BackupIncrementalAsync(CancellationToken ct = default)
+    public async Task<SnapshotManifest> BackupIncrementalAsync(CancellationToken ct = default, bool automatic = false)
     {
-        if (Settings.Content == BackupContent.None) throw new InvalidOperationException("请至少选择一种备份内容。");
+        BackupContent content = Settings.GetBackupContent(automatic);
+        if (content == BackupContent.None) throw new InvalidOperationException("请至少选择一种备份内容。");
         using IBackupProvider provider = _providers(ActiveProfile);
         string work = Work();
         try
@@ -30,25 +31,25 @@ public sealed partial class BackupCoordinator
             var archives = new IncrementalArchiveStore(provider, work, committed);
             int reusedSaveFiles = 0;
             IReadOnlyList<GameIdentity> all = _host.GetGames();
-            List<GameIdentity> selected = all.Where(game => Settings.AllGames || Settings.SelectedGameIds.Contains(game.Id)).ToList();
-            if (Settings.Content.HasFlag(BackupContent.Saves) && selected.Any(game => game.IsRunning))
+            List<GameIdentity> selected = all.Where(Settings.IncludesGame).ToList();
+            if (content.HasFlag(BackupContent.Saves) && selected.Any(game => game.IsRunning))
                 throw new InvalidOperationException("所选游戏仍在运行，请在游戏退出后备份。");
             var snapshot = new SnapshotManifest
             {
                 FormatVersion = 2, Id = NewId(), DeviceId = Settings.DeviceId, DeviceName = Settings.DeviceName,
-                CreatedUtc = DateTimeOffset.UtcNow, Content = Settings.Content, Games = selected.Select(CanonicalIdentity).ToList()
+                CreatedUtc = DateTimeOffset.UtcNow, Content = content, Games = selected.Select(CanonicalIdentity).ToList()
             };
             snapshot.ManifestPath = $"v2/snapshots/{Settings.DeviceId:N}/{snapshot.Id}/manifest.json";
-            if ((Settings.Content & ~BackupContent.Saves) != BackupContent.None)
+            if ((content & ~BackupContent.Saves) != BackupContent.None)
             {
                 Report("正在检查所选资料和图片的变化…");
                 HostExport exported = await _host.ExportAsync(Path.Combine(work, "export"), ct);
-                SoftwarePackage package = await SoftwareBackupCodec.CreateAsync(exported, Settings, all, Path.Combine(work, "software"), ct);
+                SoftwarePackage package = await SoftwareBackupCodec.CreateAsync(exported, Settings, all, Path.Combine(work, "software"), ct, content);
                 snapshot.Games = package.Games.ToList();
                 if (package.DataPath != null) snapshot.DataRecipe = await archives.UploadAsync(package.DataPath, Settings.DeviceId, ct);
                 if (package.MediaPath != null) snapshot.MediaRecipe = await archives.UploadAsync(package.MediaPath, Settings.DeviceId, ct);
             }
-            if (Settings.Content.HasFlag(BackupContent.Saves))
+            if (content.HasFlag(BackupContent.Saves))
                 foreach (GameIdentity game in selected)
                 {
                     ct.ThrowIfCancellationRequested();

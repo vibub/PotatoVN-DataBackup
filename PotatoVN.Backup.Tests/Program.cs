@@ -19,12 +19,12 @@ internal static partial class EngineTests
 {
     private static readonly string Root = Path.Combine(Path.GetTempPath(), "PotatoVNBackupTests", Guid.NewGuid().ToString("N"));
     private static int _passed;
-    private const int ExpectedChecks = 39;
+    private const int ExpectedChecks = 42;
     public static async Task<int> RunAsync(bool includeIncrementalGc = true)
     {
         int expectedChecks = ExpectedChecks - (includeIncrementalGc ? 0 : 3);
         Directory.CreateDirectory(Root);
-        if (!includeIncrementalGc) Console.WriteLine("SKIP 增量清理的3组：按本次入口要求排除清理，其余36组完整执行。");
+        if (!includeIncrementalGc) Console.WriteLine($"SKIP 增量清理的3组：按本次入口要求排除清理，其余{expectedChecks}组完整执行。");
         try
         {
             await Test("选择评价不泄露其他字段或图片", ProjectionAsync);
@@ -42,6 +42,9 @@ internal static partial class EngineTests
             await Test("待恢复区按引用清理且不影响实际存档", PendingCleanupAsync);
             await Test("损坏暂存包不写入现有存档", CorruptSaveAsync);
             await Test("坏配置保留错误而不重置为默认值", InvalidSettingsAsync);
+            await Test("旧配置兼容及独立自动备份内容持久化", BackupSelectionSettingsAsync);
+            await Test("本地非本地范围过滤资料图片和分类引用", GameScopeProjectionAsync);
+            await Test("手动自动触发独立过滤资料图片与存档", AutomaticBackupContentAsync);
             await Test("资料清单最后发布及未完成上传不可见", PublishLastAsync);
             await Test("存档复用、缺失保留及引用保护", SaveHistoryAsync);
             await Test("下载校验及非法清单路径被拒绝", DownloadValidationAsync);

@@ -20,8 +20,10 @@ public sealed partial class SmokeApp
         games.AddRange(added);
         HashSet<Guid> selected = Field<HashSet<Guid>>(view, "_selectedGameIds");
         Guid[] original = selected.ToArray();
-        CheckBox all = Field<CheckBox>(view, "_allGames");
-        bool? originalAll = all.IsChecked;
+        CheckBox specific = Field<CheckBox>(view, "_specificGames");
+        CheckBox localScope = Field<CheckBox>(view, "_localGames");
+        CheckBox remoteScope = Field<CheckBox>(view, "_nonLocalGames");
+        bool? originalSpecific = specific.IsChecked;
         TextBox search = Field<TextBox>(view, "_gameSearch");
         TextBox saveSearch = Field<TextBox>(view, "_saveGameSearch");
         CheckBox only = Field<CheckBox>(view, "_onlySelectedGames");
@@ -32,7 +34,7 @@ public sealed partial class SmokeApp
         {
             InvokeButton(FindButton(view, "刷新游戏列表"));
             await WaitIdleAsync(view);
-            all.IsChecked = false;
+            specific.IsChecked = true;
             selected.Clear();
             search.Text = "甲组";
             await Task.Delay(80);
@@ -59,16 +61,29 @@ public sealed partial class SmokeApp
             list.SelectedItems.Remove(removed);
             Check(selected.Count == 32 && list.Items.Count == 32 && !selected.Contains(((GameIdentity)removed.Tag).Id),
                 "只看已选时取消勾选应立即移除该行及对应ID。");
-            all.IsChecked = true;
+            specific.IsChecked = false;
             Check(Field<StackPanel>(view, "_manualGameScope").Visibility == Visibility.Collapsed && selected.Count == 32,
                 "切到全部游戏应隐藏手选区且保留手选草稿。");
-            all.IsChecked = false;
+            specific.IsChecked = true;
             only.IsChecked = false;
             search.Text = "ｓａｖｅ 日本語";
             await Task.Delay(80);
             await WaitForUiAsync(() => list.Items.Count == 64, "全半角搜索未更新。");
             Check(list.Items.Count == 64, "搜索应支持多个词、大小写及全半角，不应按名称合并游戏。");
             results.Add("PASS game-scope-search: 64 games; filtered batch selection; hidden IDs survive filters; selected-only removal; all-games draft; width/case-insensitive multiword search");
+            search.Text = "";
+            await Task.Delay(80);
+            remoteScope.IsChecked = false;
+            Check(list.Items.Count == 1 && ((GameIdentity)((ListViewItem)list.Items[0]).Tag).Id == games[0].Id && selected.Count == 32,
+                "本地范围应只显示有效目录游戏，并保留范围外的指定游戏草稿。");
+            localScope.IsChecked = false;
+            Check(list.Items.Count == 0, "都不勾选时不能显示全部游戏。");
+            remoteScope.IsChecked = true;
+            Check(list.Items.Count == 65 && list.Items.OfType<ListViewItem>().All(item => !Directory.Exists(((GameIdentity)item.Tag).LocalDirectory)),
+                "非本地范围应包含未关联或已卸载游戏。");
+            localScope.IsChecked = true;
+            Check(list.Items.Count == 66 && selected.Count == 32, "两类范围共同选择或手选草稿恢复失败。");
+            results.Add("PASS game-category-scope: local/nonlocal independently filter; neither is empty; both include all; hidden selected IDs survive scope switches");
 
             ListView saveGames = Field<ListView>(view, "_saveGame");
             saveSearch.Text = "甲组";
@@ -124,7 +139,7 @@ public sealed partial class SmokeApp
 
             search.Text = "";
             await Task.Delay(80);
-            all.IsChecked = true;
+            specific.IsChecked = false;
             saveGames.SelectedItem = saveGames.Items.OfType<ListViewItem>().Single(item => ((GameIdentity)item.Tag).Id == games[0].Id);
             ScrollViewer content = Field<ScrollViewer>(view, "_pageScroll");
             foreach (int width in new[] { 1080, 620 })
@@ -165,7 +180,9 @@ public sealed partial class SmokeApp
             unconfigured.IsChecked = false;
             local.IsChecked = false;
             only.IsChecked = false;
-            all.IsChecked = originalAll;
+            localScope.IsChecked = true;
+            remoteScope.IsChecked = true;
+            specific.IsChecked = originalSpecific;
             InvokeButton(FindButton(view, "刷新游戏列表"));
             await WaitIdleAsync(view);
             double scale = host.XamlRoot.RasterizationScale;
