@@ -98,7 +98,7 @@ public sealed partial class SmokeApp : Application
                 Pivot navigation = FindAll<Pivot>(view).Single(pivot => AutomationProperties.GetName(pivot) == "设置页面");
                 Check(navigation.Items.Count == 6, "应能通过固定导航访问全部六个设置页面。");
                 await CheckFeedbackScopeAsync(view, controller, navigation, results);
-                foreach (var size in new[] { (Width: 1080, Height: 760), (Width: 760, Height: 620), (Width: 620, Height: 540) })
+                foreach (var size in new[] { (Width: 1440, Height: 900), (Width: 1080, Height: 760), (Width: 760, Height: 620), (Width: 620, Height: 540) })
                 {
                     // AppWindow 使用物理像素；按当前缩放换算后验证同等逻辑尺寸。
                     double scale = host.XamlRoot.RasterizationScale;
@@ -119,6 +119,7 @@ public sealed partial class SmokeApp : Application
                         AssertVisible(backup, hostScroll, "立即备份");
                         AssertVisible(feedback, hostScroll, "操作反馈");
                         Check(hostScroll.ScrollableHeight < 2, "设置控件撑高了宿主滚动区域，反馈和操作会被卷走。");
+                        AssertPageAlignment(contentScroll, save, index);
                         if (size.Width == 1080) await CaptureAsync(host, $"settings-{size.Width}x{size.Height}-page-{index}-top.png");
                         double navigationY = PositionY(navigation, hostScroll);
                         double actionY = PositionY(save, hostScroll);
@@ -130,7 +131,7 @@ public sealed partial class SmokeApp : Application
                             "滚动设置内容时移动了固定导航或底部操作。");
                         await CaptureAsync(host, $"settings-{size.Width}x{size.Height}-page-{index}.png");
                         string page = ((PivotItem)navigation.Items[index]).Header is TextBlock header ? header.Text : ((PivotItem)navigation.Items[index]).Header?.ToString() ?? "";
-                        results.Add($"PASS layout {size.Width}x{size.Height} {page}: navigation/actions/feedback visible; outer scroll {hostScroll.ScrollableHeight:0.##}; content scroll {contentScroll.ScrollableHeight:0.##}");
+                        results.Add($"PASS layout {size.Width}x{size.Height} {page}: content left-aligned with footer; no horizontal clipping; navigation/actions/feedback visible; outer scroll {hostScroll.ScrollableHeight:0.##}; content scroll {contentScroll.ScrollableHeight:0.##}");
                         if (index == 0)
                         {
                             InvokeButton(FindButton(view, "查看日志"));
@@ -150,6 +151,21 @@ public sealed partial class SmokeApp : Application
                             results.Add($"PASS log-toggle {size.Width}x{size.Height}: recent results visible; navigation/actions/feedback stay in viewport");
                         }
                     }
+                    navigation.SelectedIndex = 4;
+                    await Task.Delay(120);
+                    controller.ShowEmptyPending = true;
+                    InvokeButton(FindButton(view, "刷新状态"));
+                    await WaitIdleAsync(view);
+                    host.UpdateLayout();
+                    ScrollViewer emptyScroll = Field<ScrollViewer>(view, "_pageScroll");
+                    AssertPageAlignment(emptyScroll, FindButton(view, "保存设置"), 4);
+                    Check(Field<ListView>(view, "_pendingList").Items.Count == 0 && Field<TextBlock>(view, "_pendingEmpty").Visibility == Visibility.Visible,
+                        "空数据检查应展示待恢复存档的空状态。");
+                    await CaptureAsync(host, $"settings-{size.Width}x{size.Height}-pending-empty.png");
+                    results.Add($"PASS empty-pending-layout {size.Width}x{size.Height}: zero entries stay left-aligned without clipping");
+                    controller.ShowEmptyPending = false;
+                    InvokeButton(FindButton(view, "刷新状态"));
+                    await WaitIdleAsync(view);
                 }
                 // 恢复常规尺寸，避免对话框验证被小窗口截断。
                 double normalScale = host.XamlRoot.RasterizationScale;
@@ -189,6 +205,20 @@ public sealed partial class SmokeApp : Application
 
     private static double PositionY(FrameworkElement element, UIElement viewport) =>
         element.TransformToVisual(viewport).TransformPoint(new Windows.Foundation.Point()).Y;
+
+    private static void AssertPageAlignment(ScrollViewer scroll, Button save, int pageIndex)
+    {
+        string[] titles = ["连接云盘", "选择备份内容", "自动备份", "从云端恢复", "待恢复存档", "关联这台电脑的游戏库"];
+        TextBlock title = FindAll<TextBlock>(scroll).Single(block => block.Text == titles[pageIndex]);
+        var page = (FrameworkElement)scroll.Content;
+        double titleLeft = title.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point()).X;
+        double footerLeft = save.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point()).X;
+        double pageLeft = page.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point()).X;
+        Check(Math.Abs(titleLeft - footerLeft) < 1 && Math.Abs(titleLeft - scroll.Padding.Left) < 1,
+            $"{titles[pageIndex]}内容未与底部操作左对齐：标题 X={titleLeft:0.##}，操作 X={footerLeft:0.##}。");
+        Check(pageLeft >= -1 && pageLeft + page.ActualWidth <= scroll.ActualWidth - scroll.Padding.Right + 1 && scroll.ScrollableWidth < 1,
+            $"{titles[pageIndex]}内容发生横向裁切：左边缘={pageLeft:0.##}，宽度={page.ActualWidth:0.##}，视口={scroll.ActualWidth:0.##}。");
+    }
 
     private static void AssertVisible(FrameworkElement element, FrameworkElement viewport, string label)
     {
@@ -510,7 +540,8 @@ internal sealed class DemoController : IBackupUiController
         ? [new SavePathSuggestion(Path.Combine(_games[0].LocalDirectory!, "save"), false, "隔离宿主检测候选"),
             new SavePathSuggestion(Path.Combine(_games[0].LocalDirectory!, "save") + Path.DirectorySeparatorChar, false, "尾分隔符相同路径候选")]
         : [];
-    public IReadOnlyList<PendingRestore> GetPending() => _pending;
+    public bool ShowEmptyPending { get; set; }
+    public IReadOnlyList<PendingRestore> GetPending() => ShowEmptyPending ? Array.Empty<PendingRestore>() : _pending;
     public long PendingBytes => 1024 * 1024 * 12;
     public bool IsBusy { get; private set; }
     public string Status { get; private set; } = "隔离界面检查：使用合成资料，不连接云端或真实游戏库。";

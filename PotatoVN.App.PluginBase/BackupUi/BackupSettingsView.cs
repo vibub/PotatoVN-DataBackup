@@ -29,6 +29,8 @@ public sealed partial class BackupSettingsView : UserControl
     {
         VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
         HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
+        HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        VerticalContentAlignment = VerticalAlignment.Top,
         Padding = new Thickness(0, 4, 12, 8)
     };
     private readonly List<StackPanel> _pages = new();
@@ -134,7 +136,6 @@ public sealed partial class BackupSettingsView : UserControl
 
     private void AddPage(string title, StackPanel panel, bool configuration = false)
     {
-        panel.MaxWidth = 860;
         panel.HorizontalAlignment = HorizontalAlignment.Stretch;
         _navigation.Items.Add(new PivotItem
         {
