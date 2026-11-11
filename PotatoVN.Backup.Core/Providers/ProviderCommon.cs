@@ -55,6 +55,7 @@ internal static class ProviderHttp
             HttpStatusCode.Forbidden => "没有访问权限，请检查应用授权和目录权限。",
             HttpStatusCode.InsufficientStorage => "云端可用空间不足。",
             HttpStatusCode.TooManyRequests => "请求过于频繁，请稍后重试。",
+            HttpStatusCode.ServiceUnavailable => "服务暂时不可用或请求过于频繁，请稍后重试。",
             _ => "操作未完成，请检查网络或服务状态。"
         };
         // 不把带令牌的上传/下载 URL 或服务端原始响应写入异常。

@@ -15,6 +15,10 @@ var tests = new (string Name, Func<Task> Run)[]
 {
     ("新渠道固定目录及旧配置目录兼容", RepositoryDirectoryCompatibility),
     ("WebDAV 完整往返、Unicode 路径、越界拒绝", WebDavRoundTrip),
+    ("WebDAV 复用已确认目录并在删除后失效", () => WebDavReliabilityChecks.DirectoryReuse(taskRoot)),
+    ("WebDAV 各方法429/503重试及完整上传流", () => WebDavReliabilityChecks.TransientRetry(taskRoot)),
+    ("WebDAV 重试上限、授权错误及等待取消", WebDavReliabilityChecks.RetryLimits),
+    ("坚果云同账号跨实例请求间隔与取消", WebDavReliabilityChecks.NutstorePacing),
     ("OneDrive 自动刷新令牌与 401 后刷新", OAuthRefresh),
     ("OneDrive 分片及预授权传输不携带 Bearer", OneDriveChunks),
     ("Google Drive 分片、分页与完整往返", GoogleChunks),
