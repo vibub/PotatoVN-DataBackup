@@ -97,6 +97,7 @@ public sealed partial class SmokeApp : Application
                 await Task.Delay(700);
                 Pivot navigation = FindAll<Pivot>(view).Single(pivot => AutomationProperties.GetName(pivot) == "设置页面");
                 Check(navigation.Items.Count == 6, "应能通过固定导航访问全部六个设置页面。");
+                await CheckFeedbackScopeAsync(view, controller, navigation, results);
                 foreach (var size in new[] { (Width: 1080, Height: 760), (Width: 760, Height: 620), (Width: 620, Height: 540) })
                 {
                     // AppWindow 使用物理像素；按当前缩放换算后验证同等逻辑尺寸。
@@ -208,6 +209,62 @@ public sealed partial class SmokeApp : Application
         typeof(BackupSettingsView).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(view) as T
         ?? throw new InvalidOperationException("找不到设置控件：" + name);
 
+    private static async Task CheckFeedbackScopeAsync(BackupSettingsView view, DemoController controller, Pivot navigation, List<string> results)
+    {
+        TextBlock status = Field<TextBlock>(view, "_status");
+        InfoBar feedback = Field<InfoBar>(view, "_feedback");
+        Check(Field<TextBlock>(view, "_saveState").Visibility == Visibility.Collapsed, "设置未修改时不应常驻显示已保存提示。");
+        for (int index = 0; index < navigation.Items.Count; index++)
+        {
+            navigation.SelectedIndex = index;
+            await Task.Delay(60);
+            Check((status.Visibility == Visibility.Visible) == (index == 4), "加载时的待恢复刷新结果只能在待恢复存档页显示。");
+        }
+        results.Add("PASS initial-refresh-scope: automatic pending refresh stays on the pending tab; saved settings label stays hidden");
+
+        navigation.SelectedIndex = 4;
+        await Task.Delay(80);
+        var refresh = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        controller.PendingRefreshWait = refresh.Task;
+        InvokeButton(FindButton(view, "刷新状态"));
+        await Task.Delay(100);
+        Check(controller.IsBusy, "刷新检查应等待模拟任务完成。");
+        navigation.SelectedIndex = 1;
+        await Task.Delay(100);
+        Check(status.Visibility == Visibility.Visible && status.Text.Contains("正在刷新"), "运行进度应在切换页签后仍可查看。");
+        refresh.SetResult();
+        await WaitIdleAsync(view);
+        controller.PendingRefreshWait = null;
+        Check(status.Visibility == Visibility.Collapsed && feedback.Visibility == Visibility.Collapsed, "待恢复刷新完成后不应在其他页面显示结果。");
+        navigation.SelectedIndex = 4;
+        await Task.Delay(80);
+        Check(feedback.Visibility == Visibility.Visible && feedback.Message == "待恢复存档已刷新。" && status.Visibility == Visibility.Collapsed,
+            "返回待恢复页应只显示一条刷新结果，不能同时重复显示控制器状态。");
+        results.Add("PASS refresh-completion-scope: progress follows a running task across tabs; completion stays on its originating tab without duplicate status");
+
+        InvokeButton(FindButton(view, "全选筛选结果"));
+        await WaitIdleAsync(view);
+        Check(Field<ListView>(view, "_pendingList").SelectedItems.Count > 0 && !feedback.IsOpen && status.Visibility == Visibility.Collapsed,
+            "全选应直接更新列表，不额外显示成功提示。");
+        InvokeButton(FindButton(view, "取消选择"));
+        await WaitIdleAsync(view);
+        Check(Field<ListView>(view, "_pendingList").SelectedItems.Count == 0 && !feedback.IsOpen, "取消选择不应额外显示完成提示。");
+        InvokeButton(FindButton(view, "设置所选目标…"));
+        await WaitIdleAsync(view);
+        Check(feedback.IsOpen && feedback.Severity == InfoBarSeverity.Error && feedback.Visibility == Visibility.Visible,
+            "未选项目时仍须在对应页显示可操作的错误。");
+        navigation.SelectedIndex = 3;
+        await Task.Delay(80);
+        Check(feedback.Visibility == Visibility.Collapsed, "错误反馈不应出现在无关页面。");
+        navigation.SelectedIndex = 4;
+        await Task.Delay(80);
+        Check(feedback.Visibility == Visibility.Visible, "返回原页面应保留尚未处理的错误。");
+        feedback.IsOpen = false;
+        Check(status.Visibility == Visibility.Collapsed, "关闭反馈后不应重新冒出旧状态。");
+        results.Add("PASS selection-and-errors: selection updates stay silent; errors are retained on their tab; dismissing feedback does not reveal stale status");
+        navigation.SelectedIndex = 0;
+    }
+
     private static void CheckAutomationInputs(BackupSettingsView view, List<string> results)
     {
         ToggleSwitch timer = Field<ToggleSwitch>(view, "_timer");
@@ -299,6 +356,7 @@ public sealed partial class SmokeApp : Application
         cancelled.Hide();
         await WaitIdleAsync(view);
         Check(!controller.Settings.SaveConfigs.Any(config => config.GameId == game.Id), "取消候选确认不应写入备份位置。");
+        Check(!Field<InfoBar>(view, "_feedback").IsOpen, "取消候选确认不应弹出未修改或成功提示。");
         InvokeButton(FindButton(view, "检查并添加…"));
         ContentDialog confirmed = await WaitDialogAsync(view, "添加存档位置");
         await CaptureAsync(confirmed, "save-candidate-confirmation.png");
@@ -454,9 +512,10 @@ internal sealed class DemoController : IBackupUiController
         : [];
     public IReadOnlyList<PendingRestore> GetPending() => _pending;
     public long PendingBytes => 1024 * 1024 * 12;
-    public bool IsBusy => false;
-    public string Status => "隔离界面检查：使用合成资料，不连接云端或真实游戏库。";
-    public event Action? StateChanged { add { } remove { } }
+    public bool IsBusy { get; private set; }
+    public string Status { get; private set; } = "隔离界面检查：使用合成资料，不连接云端或真实游戏库。";
+    public event Action? StateChanged;
+    public Task? PendingRefreshWait { get; set; }
     public int SaveCalls { get; private set; }
     public int OperationCalls { get; private set; }
     public Task SaveSettingsAsync()
@@ -465,7 +524,19 @@ internal sealed class DemoController : IBackupUiController
         if (Program.Interactive) File.WriteAllText(Path.Combine(Program.Output, "interactive-state.json"), JsonSerializer.Serialize(Settings, BackupJson.Options));
         return Task.CompletedTask;
     }
-    public Task RefreshPendingAsync(CancellationToken token) => Task.CompletedTask;
+    public async Task RefreshPendingAsync(CancellationToken token)
+    {
+        IsBusy = true;
+        Status = "正在刷新待恢复区…";
+        StateChanged?.Invoke();
+        try
+        {
+            await (PendingRefreshWait ?? Task.CompletedTask);
+            token.ThrowIfCancellationRequested();
+            Status = "待恢复区已刷新。";
+        }
+        finally { IsBusy = false; StateChanged?.Invoke(); }
+    }
     public void CancelCurrentOperation() { }
     private Task Disabled() { OperationCalls++; return Task.FromException(new InvalidOperationException("隔离界面检查不执行真实操作。")); }
     public Task SetSecretAsync(Guid id, string suffix, string value) => Disabled();

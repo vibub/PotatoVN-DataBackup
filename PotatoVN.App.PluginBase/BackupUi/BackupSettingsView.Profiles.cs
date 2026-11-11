@@ -20,7 +20,7 @@ public sealed partial class BackupSettingsView
     private readonly TextBox _tenant = TextInput("微软登录目录", "通常无需修改，默认 common");
     private readonly TextBox _googleJson = new()
     {
-        Header = "Google 桌面应用配置 JSON", PlaceholderText = "粘贴从 Google Cloud 下载的“桌面应用”JSON；保存或登录时会自动导入",
+        Header = "Google 桌面应用配置 JSON", PlaceholderText = "粘贴从 Google Cloud 下载的桌面应用 JSON",
         AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, MinHeight = 100, MaxHeight = 180
     };
     private readonly TextBlock _repositoryNote = Note("");
@@ -37,7 +37,6 @@ public sealed partial class BackupSettingsView
     {
         var panel = Stack();
         panel.Children.Add(Heading("连接云盘"));
-        panel.Children.Add(Note("先选择云盘类型，填写连接信息，再测试连接。设置完成后，到“备份内容”选择要备份的数据。"));
         panel.Children.Add(_profilePick);
         var profileActions = Row();
         profileActions.Children.Add(ActionButton("添加其他渠道", async _ =>
@@ -45,7 +44,7 @@ public sealed partial class BackupSettingsView
             if (!await ConfirmLeavingProfileAsync()) return;
             _editingProfile = new ProviderProfile();
             RefreshProfiles(_editingProfile.Id);
-        }, successMessage: "已打开新渠道表单，填写连接信息后保存即可。"));
+        }));
         _deleteChannel = ActionButton("删除此渠道", async _ =>
         {
             ProviderProfile profile = RequireProfile();
@@ -73,18 +72,17 @@ public sealed partial class BackupSettingsView
         panel.Children.Add(_providerKind);
         _webDavFields = Stack();
         foreach (UIElement field in new UIElement[] { _endpoint, _username, _password }) _webDavFields.Children.Add(field);
-        _webDavFields.Children.Add(Note("坚果云等服务请使用应用专用密码。地址填服务商给出的 WebDAV 地址即可，无需另建或填写备份目录。"));
+        _webDavFields.Children.Add(Note("坚果云等服务需使用应用专用密码。"));
         panel.Children.Add(_webDavFields);
         _oauthFields = Stack();
-        _oauthFields.Children.Add(Note("需要先在 Microsoft Entra 注册可供个人账号登录的桌面应用，然后填写它的客户端 ID。登录时会打开系统浏览器。"));
+        _oauthFields.Children.Add(Note("填写 Microsoft Entra 桌面应用的客户端 ID，登录时会打开浏览器。"));
         _oauthFields.Children.Add(_clientId);
         panel.Children.Add(_oauthFields);
         _googleFields = Stack();
-        _googleFields.Children.Add(Note("需要先在 Google Cloud 创建 OAuth“桌面应用”，下载 JSON 配置后粘贴到下方。登录时会打开系统浏览器。"));
+        _googleFields.Children.Add(Note("在 Google Cloud 创建 OAuth 桌面应用，下载并粘贴 JSON 配置。"));
         _googleFields.Children.Add(_googleConfigured);
         _googleFields.Children.Add(_googleJson);
         panel.Children.Add(_googleFields);
-        panel.Children.Add(_repositoryNote);
 
         var connectionActions = Row();
         _authorizeChannel = ActionButton("登录云盘并测试", async ct =>
@@ -93,20 +91,20 @@ public sealed partial class BackupSettingsView
             ProviderProfile profile = RequireProfile();
             await _controller.AuthorizeAsync(profile.Id, ct);
             await _controller.ProbeAsync(profile.Id, ct);
-        }, successMessage: "云盘登录成功，连接测试通过。现在可以选择备份内容并开始备份。" );
+        }, successMessage: "登录成功，连接测试通过。" );
         connectionActions.Children.Add(_authorizeChannel);
         connectionActions.Children.Add(ActionButton("保存并测试连接", async ct =>
         {
             await SaveProfileFieldsAsync();
             await _controller.ProbeAsync(RequireProfile().Id, ct);
-        }, successMessage: "连接测试通过，渠道已保存并用于备份与恢复。" ));
+        }, successMessage: "连接测试通过。" ));
         panel.Children.Add(connectionActions);
-        panel.Children.Add(Note("测试和登录会自动保存当前渠道。只想保存时，使用下方“保存设置”。"));
 
         var advanced = Stack();
         advanced.Children.Add(profileActions);
         advanced.Children.Add(_profileName);
         advanced.Children.Add(_tenant);
+        advanced.Children.Add(_repositoryNote);
         panel.Children.Add(new Expander { Header = "更多选项", Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         _profilePick.SelectionChanged += async (_, _) =>
         {
@@ -127,7 +125,6 @@ public sealed partial class BackupSettingsView
                 _editingProfile = selected;
                 ClearChannelHistory();
                 RefreshProfiles(selected.Id);
-                ShowMessage($"已切换到“{selected.Name}”，后续备份和恢复都使用此渠道。", InfoBarSeverity.Success);
             }, false);
         };
         _providerKind.SelectionChanged += (_, _) => { UpdateProviderFields(); ProfileFieldChanged(); };
@@ -199,10 +196,11 @@ public sealed partial class BackupSettingsView
         _loading = false;
         _deleteChannel.Visibility = saved ? Visibility.Visible : Visibility.Collapsed;
         _repositoryNote.Text = profile?.RepositoryFolder == "PotatoVN_Data" && string.IsNullOrEmpty(profile.RemotePath)
-            ? "备份目录：PotatoVN_Data（连接时自动创建，无需配置）"
-            : $"沿用已有备份目录：{(string.IsNullOrEmpty(profile?.RemotePath) ? "" : profile.RemotePath.TrimEnd('/', '\\') + "/")}{profile?.RepositoryFolder}。保持原位置以继续访问历史备份。";
+            ? "备份目录：PotatoVN_Data"
+            : $"备份目录：{(string.IsNullOrEmpty(profile?.RemotePath) ? "" : profile.RemotePath.TrimEnd('/', '\\') + "/")}{profile?.RepositoryFolder}";
         _googleConfigured.Text = profile?.Kind == ProviderKind.GoogleDrive && !string.IsNullOrWhiteSpace(profile.ClientId)
-            ? "已保存桌面应用配置；需要更换时粘贴新的 JSON。" : "尚未导入应用配置。";
+            ? "已保存应用配置，可粘贴新 JSON 替换。" : "尚未导入应用配置。";
+        _googleConfigured.Visibility = string.IsNullOrWhiteSpace(profile?.ClientId) ? Visibility.Collapsed : Visibility.Visible;
         UpdateProviderFields();
     }
 

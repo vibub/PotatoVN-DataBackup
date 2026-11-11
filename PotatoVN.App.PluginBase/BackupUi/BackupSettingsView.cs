@@ -45,6 +45,10 @@ public sealed partial class BackupSettingsView : UserControl
     private bool _settingsDirty;
     private bool _operationDismissed;
     private string? _lastStatus;
+    private int? _operationPageIndex;
+    private int? _statusPageIndex;
+    private int? _feedbackPageIndex;
+    private bool _hasStatus;
 
     public BackupSettingsView(IBackupUiController controller, Func<IntPtr>? getWindowHandle = null)
     {
@@ -78,6 +82,7 @@ public sealed partial class BackupSettingsView : UserControl
             {
                 _pageScroll.Content = _pages[index];
                 _pageScroll.ChangeView(null, 0, null, true);
+                UpdateFeedbackVisibility();
             }
         };
         _navigation.SelectedIndex = 0;
@@ -96,7 +101,7 @@ public sealed partial class BackupSettingsView : UserControl
         {
             await SaveAllSettingsAsync();
             await _controller.BackupAsync(ct);
-        }, successMessage: "备份已完成。可在“恢复备份”查看云端版本。");
+        });
         if (Application.Current.Resources.TryGetValue("AccentButtonStyle", out object? accent) && accent is Style style) backup.Style = style;
         actions.Children.Add(backup);
         _cancel.Click += (_, _) => { _operationCts?.Cancel(); _controller.CancelCurrentOperation(); };
@@ -114,6 +119,7 @@ public sealed partial class BackupSettingsView : UserControl
         Grid.SetRow(footer, 3);
         root.Children.Add(footer);
         Content = root;
+        _feedback.Closed += (_, _) => { _hasStatus = false; UpdateFeedbackVisibility(); };
 
         Loaded += OnLoaded;
         Unloaded += (_, _) =>
@@ -165,7 +171,7 @@ public sealed partial class BackupSettingsView : UserControl
             }
         }
         RefreshStatus();
-        await RunAsync(async ct => await _controller.RefreshPendingAsync(ct), false);
+        await RunAsync(async ct => await _controller.RefreshPendingAsync(ct), false, pageIndex: 4);
     }
 
     private void HostSizeChanged(object sender, SizeChangedEventArgs args) => UpdateViewportHeight();
@@ -195,25 +201,38 @@ public sealed partial class BackupSettingsView : UserControl
         _cancel.IsEnabled = _operationCts is { IsCancellationRequested: false } || _controller.IsBusy;
         foreach (Control control in _operationControls) control.IsEnabled = !busy;
         foreach (Control control in _configurationTabs) control.IsEnabled = !busy;
-        _status.Text = string.IsNullOrWhiteSpace(_controller.Status) ? "就绪" : _controller.Status;
+        _status.Text = _controller.Status;
         _status.MaxLines = 2;
         _status.TextTrimming = TextTrimming.CharacterEllipsis;
         ToolTipService.SetToolTip(_status, _status.Text);
         if (_lastStatus != _status.Text)
         {
+            _hasStatus = _lastStatus != null;
             _lastStatus = _status.Text;
+            _statusPageIndex = _operationPageIndex;
             AddLog(_status.Text);
         }
         ProviderProfile? active = _controller.Settings.Profiles.FirstOrDefault(p => p.Id == _controller.Settings.ActiveProfileId);
-        _activeChannel.Text = active == null ? "先连接一个云盘，再开始备份。" : $"当前云盘：{active.Name} · {ProviderLabel(active.Kind)}";
-        _saveState.Text = (_settingsDirty || _profileDirty) ? "有未保存的修改 · 立即备份也会保存设置" : "设置已保存";
+        _activeChannel.Text = active == null ? "尚未连接云盘" : $"当前云盘：{active.Name} · {ProviderLabel(active.Kind)}";
+        _saveState.Text = (_settingsDirty || _profileDirty) ? "有未保存的修改" : "设置已保存";
+        _saveState.Visibility = (_settingsDirty || _profileDirty) ? Visibility.Visible : Visibility.Collapsed;
+        UpdateFeedbackVisibility();
+    }
+
+    private void UpdateFeedbackVisibility()
+    {
+        bool feedbackVisible = _feedback.IsOpen && _feedbackPageIndex == _navigation.SelectedIndex;
+        _feedback.Visibility = feedbackVisible ? Visibility.Visible : Visibility.Collapsed;
+        bool statusVisible = _hasStatus && !string.IsNullOrWhiteSpace(_status.Text) && !feedbackVisible &&
+            (_controller.IsBusy || _statusPageIndex == null || _statusPageIndex == _navigation.SelectedIndex);
+        _status.Visibility = statusVisible ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void MarkSettingsDirty()
     {
         if (_loading) return;
         _settingsDirty = true;
-        _saveState.Text = "有未保存的修改 · 立即备份也会保存设置";
+        RefreshStatus();
     }
 
     private void MarkSettingsSaved()
@@ -229,7 +248,7 @@ public sealed partial class BackupSettingsView : UserControl
         _logText.Text = string.Join(Environment.NewLine, _logEntries.AsEnumerable().Reverse());
     }
 
-    private async Task RunAsync(Func<CancellationToken, Task> action, bool showSuccess = true, string? successMessage = null)
+    private async Task RunAsync(Func<CancellationToken, Task> action, bool showSuccess = true, string? successMessage = null, int? pageIndex = null)
     {
         if (_operationCts != null || _controller.IsBusy)
         {
@@ -238,8 +257,10 @@ public sealed partial class BackupSettingsView : UserControl
         }
         using var cancellation = new CancellationTokenSource();
         _operationCts = cancellation;
+        _operationPageIndex = pageIndex ?? _navigation.SelectedIndex;
         _operationDismissed = false;
         _feedback.IsOpen = false;
+        _hasStatus = false;
         RefreshStatus();
         try
         {
@@ -258,6 +279,7 @@ public sealed partial class BackupSettingsView : UserControl
         {
             _operationCts = null;
             RefreshStatus();
+            _operationPageIndex = null;
             RefreshPendingView();
             RefreshLibraryView();
         }
@@ -267,14 +289,17 @@ public sealed partial class BackupSettingsView : UserControl
     {
         _feedback.Severity = severity;
         _feedback.Message = message;
+        _feedbackPageIndex = _operationCts != null ? _operationPageIndex : _navigation.SelectedIndex;
+        _hasStatus = false;
         _feedback.IsOpen = true;
+        UpdateFeedbackVisibility();
         AddLog(message);
     }
 
     private Button ActionButton(string text, Func<CancellationToken, Task> action, bool trackBusy = true, string? successMessage = null)
     {
         var button = new Button { Content = text };
-        button.Click += async (_, _) => await RunAsync(action, successMessage: successMessage ?? $"{text}已完成。");
+        button.Click += async (_, _) => await RunAsync(action, showSuccess: successMessage != null, successMessage: successMessage);
         if (trackBusy) _operationControls.Add(button);
         return button;
     }

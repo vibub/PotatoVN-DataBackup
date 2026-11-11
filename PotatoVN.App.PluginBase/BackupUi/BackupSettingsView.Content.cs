@@ -35,7 +35,7 @@ public sealed partial class BackupSettingsView
     {
         var panel = Stack();
         panel.Children.Add(Heading("选择备份内容"));
-        panel.Children.Add(Note("手动、定时和游戏退出后备份共用以下勾选。未选的字段和图片不会上传；恢复时可以再次选择类型。"));
+        panel.Children.Add(Note("手动和自动备份共用以下设置。"));
         var choices = Row();
         foreach ((BackupContent flag, string label) in ContentChoices)
         {
@@ -54,7 +54,6 @@ public sealed partial class BackupSettingsView
         selectActions.Children.Add(none);
         panel.Children.Add(selectActions);
         panel.Children.Add(choices);
-        panel.Children.Add(Note("常规设置不包含账号密码、授权令牌和机器专属配置。游戏存档仅使用下面确认的位置，不扫描整个游戏目录。"));
         panel.Children.Add(Heading("游戏范围"));
         _allGames.IsChecked = _controller.Settings.AllGames;
         panel.Children.Add(_allGames);
@@ -80,7 +79,7 @@ public sealed partial class BackupSettingsView
             return Task.CompletedTask;
         }));
         panel.Children.Add(Heading("各游戏存档位置"));
-        panel.Children.Add(Note("可为每个游戏指定多个位置，支持目录或单个文件。关联游戏前，恢复的存档统一保存在待恢复区。"));
+        panel.Children.Add(Note("支持添加多个文件夹或文件。"));
         BuildSaveLocationControls(panel);
         return panel;
     }
@@ -105,14 +104,14 @@ public sealed partial class BackupSettingsView
         bool all = _allGames.IsChecked == true;
         _gameSelection.Visibility = all ? Visibility.Collapsed : Visibility.Visible;
         _gameSelection.IsEnabled = !all;
-        _gameScopeNote.Text = all ? "包含所有游戏，之后添加的游戏也会自动纳入。" : $"已选 {_selectedGameIds.Count} 款游戏。请在列表中勾选需要备份的游戏。";
+        _gameScopeNote.Text = all ? "包含之后添加的游戏" : $"已选 {_selectedGameIds.Count} 款游戏";
     }
 
     private StackPanel BuildAutomationTab()
     {
         var panel = Stack();
         panel.Children.Add(Heading("自动备份"));
-        panel.Children.Add(Note("自动备份仅在 PotatoVN 运行且插件启用时执行。两个行为可分别开关，共用备份内容与游戏范围。"));
+        panel.Children.Add(Note("仅在 PotatoVN 运行且插件启用时执行。"));
         _timer.IsOn = _controller.Settings.TimerEnabled;
         _onExit.IsOn = _controller.Settings.OnGameExitEnabled;
         _interval.Value = _controller.Settings.IntervalHours;
@@ -125,7 +124,7 @@ public sealed partial class BackupSettingsView
         panel.Children.Add(_onExit);
         panel.Children.Add(_exitDelay);
         var advanced = Stack();
-        advanced.Children.Add(Note("通常保持默认值即可。超过保留数量后会清理较旧版本，仍被快照引用的存档除外。"));
+        advanced.Children.Add(Note("超过保留数量时清理旧版本，仍被快照引用的存档会保留。"));
         foreach (UIElement item in new UIElement[] { _deviceName, _keepSnapshots, _keepSaves }) advanced.Children.Add(item);
         panel.Children.Add(new Expander { Header = "设备名称与历史保留", Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         _interval.IsEnabled = _timer.IsOn;
@@ -135,7 +134,6 @@ public sealed partial class BackupSettingsView
         foreach (NumberBox number in new[] { _interval, _exitDelay, _keepSnapshots, _keepSaves })
             number.ValueChanged += (_, _) => MarkSettingsDirty();
         _deviceName.TextChanged += (_, _) => MarkSettingsDirty();
-        panel.Children.Add(Note("仍被保留快照引用的存档会延后清理。游戏卸载或本机找不到存档，不会用空存档覆盖云端版本。"));
         panel.Children.Add(Note(_controller.Settings.LastSuccessfulBackupUtc is { } time ? $"最近成功备份：{time.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : "尚未完成备份。"));
         return panel;
     }

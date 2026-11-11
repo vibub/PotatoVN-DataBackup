@@ -34,7 +34,6 @@ public sealed partial class BackupSettingsView
     {
         var panel = Stack();
         panel.Children.Add(Heading("待恢复存档"));
-        panel.Children.Add(Note("1. 选择一个存档版本 → 2. 检查对应游戏和目标位置 → 3. 恢复所选存档。标记为“待关联”或“待指定路径”的项目需要先设置目标。"));
         panel.Children.Add(_pendingSummary);
         panel.Children.Add(_pendingCounts);
         var filters = Row();
@@ -45,10 +44,10 @@ public sealed partial class BackupSettingsView
         panel.Children.Add(_pendingEmpty);
         panel.Children.Add(_pendingSelection);
         var actions = Row();
-        actions.Children.Add(ActionButton("刷新状态", async ct => await _controller.RefreshPendingAsync(ct)));
-        actions.Children.Add(ActionButton("全选筛选结果", _ => { _pendingList.SelectAll(); return Task.CompletedTask; }, successMessage: "已选中当前筛选结果。"));
-        actions.Children.Add(ActionButton("取消选择", _ => { _pendingList.SelectedItems.Clear(); return Task.CompletedTask; }, successMessage: "已取消选择。"));
-        actions.Children.Add(ActionButton("设置所选目标…", async ct => await ConfigurePendingTargetAsync(ct), successMessage: "对应游戏与恢复位置已保存。"));
+        actions.Children.Add(ActionButton("刷新状态", async ct => await _controller.RefreshPendingAsync(ct), successMessage: "待恢复存档已刷新。"));
+        actions.Children.Add(ActionButton("全选筛选结果", _ => { _pendingList.SelectAll(); return Task.CompletedTask; }));
+        actions.Children.Add(ActionButton("取消选择", _ => { _pendingList.SelectedItems.Clear(); return Task.CompletedTask; }));
+        actions.Children.Add(ActionButton("设置所选目标…", async ct => await ConfigurePendingTargetAsync(ct), successMessage: "恢复位置已保存。"));
         panel.Children.Add(actions);
         var restoreActions = Row();
         restoreActions.Children.Add(ActionButton("恢复所选存档", async ct =>
@@ -66,12 +65,12 @@ public sealed partial class BackupSettingsView
             foreach (PendingRestore entry in entries)
                 body.Children.Add(Note($"{entry.Manifest.Game.Name} · {entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}\n→ {entry.TargetPath}"));
             if (await DialogAsync("确认存档恢复位置", new ScrollViewer { Content = body, MaxHeight = 440 }, "恢复所选存档") != ContentDialogResult.Primary)
-            { ShowMessage("未写入游戏存档。", InfoBarSeverity.Informational); return; }
+                return;
             await _controller.RestorePendingAsync(ids, ct);
-        }, successMessage: "所选存档已恢复。"));
+        }));
         panel.Children.Add(restoreActions);
         var cleanup = Stack(8);
-        cleanup.Children.Add(Note("仅删除本机暂存副本和任务，云端版本、游戏资料及实际游戏存档不会删除。"));
+        cleanup.Children.Add(Note("仅清理本机暂存副本，云端备份和游戏存档会保留。"));
         var cleanupActions = Row();
         cleanupActions.Children.Add(ActionButton("清理所选…", async ct => await ClearPendingWithConfirmationAsync(SelectedPendingIds(), ct), successMessage: "所选本机暂存副本已清理。"));
         cleanupActions.Children.Add(ActionButton("清理全部已恢复…", async ct =>
@@ -83,7 +82,6 @@ public sealed partial class BackupSettingsView
         cleanupActions.Children.Add(ActionButton("清空待恢复存档…", async ct => await ClearPendingWithConfirmationAsync(_controller.GetPending().Select(p => p.Id).ToArray(), ct)));
         cleanup.Children.Add(cleanupActions);
         panel.Children.Add(new Expander { Header = "管理暂存空间", Content = cleanup, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
-        panel.Children.Add(Note("清理不会删除云端版本或已写入游戏实际目录的存档。云端对应版本仍存在时，可以从历史页重新下载。正在使用的项目需先完成或取消操作。"));
         _pendingList.SelectionChanged += (_, _) => UpdatePendingSelection();
         _pendingStatusFilter.SelectionChanged += (_, _) => { if (!_buildingPendingFilters) RefreshPendingView(); };
         _pendingGameFilter.SelectionChanged += (_, _) => { if (!_buildingPendingFilters) RefreshPendingView(); };
@@ -155,13 +153,13 @@ public sealed partial class BackupSettingsView
         }
         _pendingEmpty.Visibility = _pendingList.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         _pendingEmpty.Text = entries.Count == 0
-            ? "暂无下载的存档。需要恢复时，请到“恢复备份”读取云端备份并选择游戏存档。"
-            : "没有符合筛选条件的存档。可切换游戏、版本或状态，或清空搜索内容。";
+            ? "暂无待恢复存档。可从“恢复备份”下载。"
+            : "没有符合筛选条件的存档。";
         UpdatePendingSelection();
     }
 
     private void UpdatePendingSelection() =>
-        _pendingSelection.Text = $"显示 {_pendingList.Items.Count} 个存档位置 · 已选择 {_pendingList.SelectedItems.Count} 项。设置目标时请只选择一项；恢复时请勿同时选择同一位置的多个版本。";
+        _pendingSelection.Text = $"显示 {_pendingList.Items.Count} 个存档位置 · 已选 {_pendingList.SelectedItems.Count} 项";
 
     private Guid[] SelectedPendingIds() => _pendingList.SelectedItems.OfType<ListViewItem>()
         .Select(item => ((PendingRestore)item.Tag).Id).ToArray();
@@ -193,7 +191,7 @@ public sealed partial class BackupSettingsView
             {
                 GameIdentity? selectedGame = Choice(game) is Guid selectedId ? _controller.GetGames().FirstOrDefault(g => g.Id == selectedId) : null;
                 string? actual = location == null ? null : SaveArchiveService.Resolve(location, selectedGame, string.IsNullOrWhiteSpace(target.Text) ? null : target.Text.Trim());
-                resolved.Text = actual == null ? "尚不能确定目标。请选择已关联有效本机目录的游戏；自定义位置还需要浏览或填写路径。" : $"将恢复到：{actual}";
+                resolved.Text = actual == null ? "请选择已关联本机目录的游戏，并补全目标路径。" : $"将恢复到：{actual}";
             }
             catch (Exception exception) when (exception is ArgumentException or IOException or InvalidOperationException or NotSupportedException)
             { resolved.Text = exception.Message; }
@@ -201,7 +199,6 @@ public sealed partial class BackupSettingsView
         game.SelectionChanged += (_, _) => { target.Text = ""; UpdateTargetPreview(); };
         target.TextChanged += (_, _) => UpdateTargetPreview();
         UpdateTargetPreview();
-        body.Children.Add(Note("对应条目仍需关联有效本地游戏目录。此处只保存对应关系与目标，不会写入存档。自定义位置需要完整绝对路径。"));
         var error = new InfoBar { Severity = InfoBarSeverity.Error, IsClosable = false };
         body.Children.Add(error);
         var dialog = NewDialog("设置存档恢复位置", body, "保存对应关系");
@@ -213,7 +210,7 @@ public sealed partial class BackupSettingsView
             args.Cancel = true;
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary)
-        { ShowMessage("未更改存档恢复位置。", InfoBarSeverity.Informational); return; }
+            return;
         await _controller.ConfigurePendingAsync(entry.Id, Choice(game) is Guid gameId ? gameId : null,
             string.IsNullOrWhiteSpace(target.Text) ? null : target.Text.Trim(), ct);
         await _controller.RefreshPendingAsync(ct);
@@ -228,7 +225,7 @@ public sealed partial class BackupSettingsView
         string message = $"清理 {entries.Length} 个存档位置的本机暂存副本及任务？\n\n云端备份、游戏资料和游戏实际目录中的存档不会删除。";
         if (notRestored > 0) message += $"\n\n其中 {notRestored} 项尚未恢复。清理后，需要在云端对应版本仍存在时重新下载。";
         if (await DialogAsync(notRestored > 0 ? "清理尚未恢复的存档" : "清理本机暂存副本", Note(message), "清理本机副本") != ContentDialogResult.Primary)
-        { ShowMessage("未清理暂存副本。", InfoBarSeverity.Informational); return; }
+            return;
         await _controller.ClearPendingAsync(ids, ct);
     }
 

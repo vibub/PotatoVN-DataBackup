@@ -8,7 +8,7 @@
 2. 打开侧边栏“云备份”，或在插件管理中点击“打开云备份设置”，进入独立页面。顶部标签栏、底部操作按钮、进度和结果固定显示，只有中间的设置内容滚动。
 3. 在“连接云盘”选择云盘类型。WebDAV 填地址、账号和应用密码，再点“保存并测试连接”；微软和谷歌填写自己的桌面 OAuth 应用配置，点“登录云盘并测试”。首次无需先添加渠道；之后切换渠道就会用于备份与恢复，未保存的编辑会先询问如何处理。详见 [云端渠道配置](doc/cloud-providers.md)。
 4. 在“备份内容”勾选类型，选择全部或指定游戏，并检查每个游戏的存档位置。支持一个游戏多个文件或目录。
-5. 点击“立即备份”（会同时保存设置）。需要自动运行时，再到“自动备份”开启定时或游戏退出后备份，并保存设置。未保存的修改会在底部提示，操作结果和最近进度记录也在按钮附近。
+5. 点击“立即备份”（会同时保存设置）。需要自动运行时，再到“自动备份”开启定时或游戏退出后备份，并保存设置。未保存的修改在底部提示；操作结果只在对应页签显示，运行进度和日志仍在底部查看。
 
 新渠道会自动建立 `PotatoVN_Data`，无需配置备份目录。旧渠道继续使用原有目录与父路径，避免升级后找不到历史；不会自动搬移已有云端文件。
 
@@ -101,8 +101,10 @@ dotnet run --project tests/ProviderProtocolChecks/ProviderProtocolChecks.csproj
 # 本机原子配置读写检查
 dotnet run --project tests/FilePersistenceChecks/FilePersistenceChecks.csproj
 
-# WinUI 插件与安装包（在 VS Developer PowerShell 中）
+# WinUI 插件编译，默认不打包（在 VS Developer PowerShell 中）
 msbuild PotatoVN.App.PluginBase/PotatoVN.App.PluginBase.csproj /restore /p:Configuration=Release /p:Platform=x64 /p:RuntimeIdentifier=win-x64
+
+# 仅在需要安装包时，给上面的命令追加 /p:PackPluginOnBuild=true
 ```
 
 验证结果及未验收部分见 [验证记录](doc/validation.md)。首版不包含游戏本体、注册表存档、多设备自动合并，或跨应用重启的分片续传。

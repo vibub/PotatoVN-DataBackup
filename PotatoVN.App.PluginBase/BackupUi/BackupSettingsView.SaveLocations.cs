@@ -25,7 +25,7 @@ public sealed partial class BackupSettingsView
         panel.Children.Add(_saveLocationHint);
         panel.Children.Add(_saveRoots);
         panel.Children.Add(_saveSuggestions);
-        panel.Children.Add(ActionButton("重新检查存档位置", _ => { RefreshSaveLocations(); return Task.CompletedTask; }, successMessage: "存档位置已重新检查，发现的候选需要确认后才会加入备份。"));
+        panel.Children.Add(ActionButton("重新检查存档位置", _ => { RefreshSaveLocations(); return Task.CompletedTask; }));
         var addActions = Row();
         addActions.Children.Add(ActionButton("选择存档文件夹…", async _ => await AddPickedSaveLocationAsync(false), successMessage: "存档位置已保存。"));
         addActions.Children.Add(ActionButton("选择存档文件…", async _ => await AddPickedSaveLocationAsync(true), successMessage: "存档位置已保存。"));
@@ -42,7 +42,7 @@ public sealed partial class BackupSettingsView
             if (Choice(_saveGame) is not Guid gameId || _saveRoots.SelectedItem is not SaveLocationChoice choice)
                 throw new InvalidOperationException("请先选择一个存档位置。");
             if (await DialogAsync("移除存档位置", Note("停止备份这个位置？本机存档和云端备份都不会删除。"), "移除") != ContentDialogResult.Primary)
-            { ShowMessage("存档位置保持原样。", InfoBarSeverity.Informational); return; }
+                return;
             _controller.Settings.SaveConfigs.First(c => c.GameId == gameId).Locations.Remove(choice.Location);
             _controller.Settings.CustomSavePaths.Remove(choice.Location.Id);
             await _controller.SaveSettingsAsync();
@@ -58,7 +58,7 @@ public sealed partial class BackupSettingsView
         if (Choice(_saveGame) is not Guid) throw new InvalidOperationException("请先选择一个游戏。");
         string? path = await PickPathAsync(isFile);
         if (path != null) await EditSaveLocationAsync(null, path, isFile);
-        else ShowMessage("未添加存档位置。", InfoBarSeverity.Informational);
+        else _operationDismissed = true;
     }
 
     private void RefreshSaveGameChoices()
@@ -85,8 +85,8 @@ public sealed partial class BackupSettingsView
         GameIdentity? game = _controller.GetGames().FirstOrDefault(g => g.Id == gameId);
         GameSaveConfig? config = _controller.Settings.SaveConfigs.FirstOrDefault(c => c.GameId == gameId);
         _saveInstallation.Text = string.IsNullOrWhiteSpace(game?.LocalDirectory)
-            ? "游戏尚未关联本机安装目录；存档位置需要另外选择。"
-            : $"游戏安装目录：{game.LocalDirectory}（不是存档位置）";
+            ? "游戏尚未关联本机目录"
+            : $"游戏安装目录：{game.LocalDirectory}";
         int count = config?.Locations.Count ?? 0;
         var configuredPaths = (config?.Locations ?? new List<SaveLocation>())
             .Select(location => SaveLocationPath(location, game)).Where(path => !string.IsNullOrWhiteSpace(path))
@@ -96,21 +96,20 @@ public sealed partial class BackupSettingsView
             .Where(candidate => !configuredPaths.Contains(Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate.Path))))
             .DistinctBy(candidate => Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate.Path)), StringComparer.OrdinalIgnoreCase).ToArray();
         _saveLocationHint.Text = count == 0
-            ? available.Length > 0 ? $"尚未加入存档备份。发现 {available.Length} 个可能的存档位置，请检查后添加。" : "尚未找到存档位置。可先在游戏中保存进度并重新检查，或直接选择实际使用的存档文件夹或文件。"
-            : $"已加入备份：{count} 个存档位置。实际备份的是下面这些位置，游戏本体不会上传。";
+            ? available.Length > 0 ? $"发现 {available.Length} 个候选位置，确认后可加入备份。" : "暂无存档位置。可手动添加，或在游戏中保存进度后重新检查。"
+            : $"已加入备份：{count} 个存档位置";
         if (config != null)
             foreach (SaveLocation location in config.Locations)
             {
                 string path = SaveLocationPath(location, game) ?? $"{SaveBaseLabel(location.BaseKind)}\\{location.RelativePath}";
                 string state = File.Exists(path) || Directory.Exists(path) ? "" : " · 当前路径不存在";
-                _saveRoots.Items.Add(new SaveLocationChoice(location, $"已加入备份 · {(location.IsFile ? "文件" : "文件夹")}\n{path}{state}"));
+                _saveRoots.Items.Add(new SaveLocationChoice(location, $"{(location.IsFile ? "文件" : "文件夹")}\n{path}{state}"));
             }
         foreach (SavePathSuggestion candidate in available)
         {
             var suggestion = Stack(4);
-            suggestion.Children.Add(Heading(candidate.Source, "BodyStrongTextBlockStyle"));
+            suggestion.Children.Add(Heading($"候选位置：{candidate.Source}", "BodyStrongTextBlockStyle"));
             suggestion.Children.Add(Note($"{(candidate.IsFile ? "文件" : "文件夹")}：{candidate.Path}"));
-            suggestion.Children.Add(Note("候选位置尚未加入备份。确认里面保存的是游戏进度后再添加。"));
             var add = new Button { Content = "检查并添加…" };
             add.Click += async (_, _) => await RunAsync(async _ => await EditSaveLocationAsync(null, candidate.Path, candidate.IsFile), successMessage: "存档位置已加入备份。");
             suggestion.Children.Add(add);
@@ -140,11 +139,11 @@ public sealed partial class BackupSettingsView
         GameIdentity game = _controller.GetGames().First(g => g.Id == gameId);
         var path = TextInput("存档路径", "粘贴完整路径，或点击下方浏览按钮");
         path.Text = pickedPath ?? (existing == null ? "" : SaveLocationPath(existing, game)) ?? "";
-        var isFile = new CheckBox { Content = "备份单个文件（未勾选时备份整个存档文件夹）", IsChecked = existing?.IsFile ?? pickedFile };
+        var isFile = new CheckBox { Content = "备份单个文件", IsChecked = existing?.IsFile ?? pickedFile };
         var preview = Note("");
         var error = new InfoBar { Severity = InfoBarSeverity.Error, IsClosable = false };
         var body = Stack();
-        body.Children.Add(Note($"游戏：{game.Name}\n选择游戏实际使用的存档位置。插件会自动识别游戏目录、AppData 和文档目录，换设备时按新位置解析。"));
+        body.Children.Add(Note($"游戏：{game.Name}"));
         body.Children.Add(path);
         var browse = Row();
         browse.Children.Add(BrowsePathButton(path, false, () => isFile.IsChecked = false));
@@ -208,7 +207,7 @@ public sealed partial class BackupSettingsView
             }
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary || selected == null)
-        { ShowMessage("未保存存档位置。", InfoBarSeverity.Informational); return; }
+            return;
         SaveLocation location = existing ?? new SaveLocation();
         location.BaseKind = selected.BaseKind;
         location.RelativePath = selected.RelativePath;
