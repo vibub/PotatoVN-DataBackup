@@ -492,7 +492,8 @@ internal static class RestoreMatchingChecks
         original.Settings.SaveConfigs = [new() { GameId = source.Game.Id, Locations = source.Manifest.Locations }];
         var snapshot = await original.Coordinator.BackupAsync();
         var saveManifest = JsonSerializer.Deserialize<SaveManifest>(remote.Files[snapshot.SaveManifestPaths.Single()], BackupJson.Options)!;
-        remote.Files[saveManifest.ArchivePath] = [0x01, 0x02];
+        string saveObject = IncrementalArchiveStore.ObjectPaths(saveManifest.Recipe!).First();
+        remote.Files[saveObject] = [0x01, 0x02];
         var local = Game(directory: Work(), source: null); var target = Context([local], remote);
         var unrelated = Map(Guid.NewGuid(), local.Id); target.Settings.GameMappings = [unrelated];
         await target.Store.SaveAsync(target.Settings);
@@ -515,7 +516,9 @@ internal static class RestoreMatchingChecks
         target.Settings.GameMappings = [Map(Guid.NewGuid(), local.Id)]; await target.Store.SaveAsync(target.Settings);
         var before = JsonSerializer.Serialize(target.Settings, BackupJson.Options);
         using var cancellation = new CancellationTokenSource();
-        remote.BeforeDownload = path => { if (path.EndsWith("/save.zip", StringComparison.Ordinal)) cancellation.Cancel(); };
+        var cloudSave = JsonSerializer.Deserialize<SaveManifest>(remote.Files[snapshot.SaveManifestPaths.Single()], BackupJson.Options)!;
+        HashSet<string> saveObjects = IncrementalArchiveStore.ObjectPaths(cloudSave.Recipe!).ToHashSet(StringComparer.Ordinal);
+        remote.BeforeDownload = path => { if (saveObjects.Contains(path)) cancellation.Cancel(); };
         var decisions = new RestoreMatchingDecisions { Targets = { [source.Game.Id] = local.Id } };
         await ThrowsAsync<OperationCanceledException>(() => target.Coordinator.StageRestoreAsync(snapshot, snapshot.Content, cancellation.Token, decisions));
         Check(JsonSerializer.Serialize(target.Settings, BackupJson.Options) == before &&

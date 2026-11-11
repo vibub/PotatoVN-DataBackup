@@ -1,4 +1,4 @@
-namespace PotatoVN.Backup.Core.Engine;
+﻿namespace PotatoVN.Backup.Core.Engine;
 
 public sealed record PendingStats(long Bytes, int Games, int Versions, IReadOnlyDictionary<RestoreStatus, int> Counts);
 
@@ -72,6 +72,8 @@ public sealed class PendingRestoreStore
                 };
                 Items.Add(item);
             }
+            // 同一云端版本重新组包时 ZIP 字节可能变化，更新缓存引用并保留已确认的目标与状态。
+            item.Manifest = manifest;
             if (excludedLocalGameIds == null) continue;
             item.ExcludedLocalGameIds = excludedLocalGameIds.ToList();
             if (selectedLocalGameId == null || item.LocalGameId != selectedLocalGameId)

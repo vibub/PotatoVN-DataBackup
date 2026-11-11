@@ -5,15 +5,26 @@ using System.Text.Json.Nodes;
 using PotatoVN.Backup.Core;
 using PotatoVN.Backup.Core.Engine;
 
-return await EngineTests.RunAsync();
+return args.Contains("--incremental-gc-only", StringComparer.Ordinal)
+    ? await EngineTests.RunIncrementalGcOnlyAsync()
+    : args.Contains("--remote-commit-only", StringComparer.Ordinal)
+    ? await EngineTests.RunRemoteCommitOnlyAsync()
+    : args.Contains("--incremental-store-only", StringComparer.Ordinal)
+    ? await EngineTests.RunIncrementalStoreOnlyAsync()
+    : args.Contains("--incremental-integration-only", StringComparer.Ordinal)
+        ? await EngineTests.RunIncrementalIntegrationOnlyAsync()
+        : await EngineTests.RunAsync(!args.Contains("--without-incremental-gc", StringComparer.Ordinal));
 
-internal static class EngineTests
+internal static partial class EngineTests
 {
     private static readonly string Root = Path.Combine(Path.GetTempPath(), "PotatoVNBackupTests", Guid.NewGuid().ToString("N"));
     private static int _passed;
-    public static async Task<int> RunAsync()
+    private const int ExpectedChecks = 39;
+    public static async Task<int> RunAsync(bool includeIncrementalGc = true)
     {
+        int expectedChecks = ExpectedChecks - (includeIncrementalGc ? 0 : 3);
         Directory.CreateDirectory(Root);
+        if (!includeIncrementalGc) Console.WriteLine("SKIP 增量清理的3组：按本次入口要求排除清理，其余36组完整执行。");
         try
         {
             await Test("选择评价不泄露其他字段或图片", ProjectionAsync);
@@ -39,11 +50,30 @@ internal static class EngineTests
             await Test("唯一来源匹配别名持久化且不改本机关联", LearnedAliasAsync);
             await Test("待恢复区清理取消残留和无引用包", PendingOrphansAsync);
             await Test("拒绝覆盖整个游戏根目录和用户基础目录", ProtectedTargetsAsync);
+            await Test("增量首次上传对象并完整恢复", IncrementalInitialAsync);
+            await Test("增量无变化跨实例不重复传对象", IncrementalNoChangeAsync);
+            await Test("增量仅修改一个小存档只传一个对象", IncrementalSingleSaveChangeAsync);
+            await Test("增量删除及重命名不重传且历史完整", IncrementalDeleteRenameAsync);
+            await Test("增量资料更新不重传封面或存档", IncrementalStableMediaAsync);
+            await Test("增量部分选择不携带未选引用或字段", IncrementalSelectionAsync);
+            await Test("增量断网与取消不发布半成品", IncrementalInterruptedAsync);
+            await Test("旧v1完整恢复及新v2独立复制", IncrementalLegacyRestoreAsync);
+            if (includeIncrementalGc)
+            {
+                await Test("增量共享对象跨设备引用保护及回收", IncrementalReferencePruneAsync);
+                await Test("增量清理删除中断不损坏保留版本", IncrementalDeleteFailureAsync);
+                await Test("增量清理缺失保留引用时停止且不删除", IncrementalMissingReferenceStopsCleanupAsync);
+            }
+            await Test("增量缺失对象补传后可恢复", IncrementalMissingObjectAsync);
+            await Test("增量失败残留同名半对象必须重传", IncrementalPartialObjectRetryAsync);
+            await Test("已发布对象缺失且修复半写后重试", IncrementalPublishedRepairRetryAsync);
+            await Test("未提交半清单不阻断已发布历史读取", IncrementalPartialManifestAsync);
+            await Test("增量存档本机适配与重暂存保留确认状态", IncrementalLocalAdapterAsync);
             Console.WriteLine($"PASS {_passed} integration checks");
             return 0;
         }
         catch (Exception e) { Console.Error.WriteLine(e); Console.Error.WriteLine("测试数据保留于 " + Root); return 1; }
-        finally { if (_passed == 23 && Directory.Exists(Root)) Directory.Delete(Root, true); }
+        finally { if (_passed == expectedChecks && Directory.Exists(Root)) Directory.Delete(Root, true); }
     }
 
     private static async Task ProtectedTargetsAsync()
@@ -321,10 +351,10 @@ internal static class EngineTests
     {
         var good = Coordinator(BackupContent.Reviews, Game());
         var snapshot = await good.Coordinator.BackupAsync();
-        Check(good.Provider.Uploads.Last() == snapshot.ManifestPath, "快照清单未最后发布");
-        var bad = Coordinator(BackupContent.Reviews, Game()); bad.Provider.FailUpload = p => p.EndsWith("/data.zip");
+        Check(good.Provider.Uploads.Last() == snapshot.ManifestPath + ".complete", "快照清单未最后发布");
+        var bad = Coordinator(BackupContent.Reviews, Game()); bad.Provider.FailUpload = p => p.StartsWith("v2/objects/", StringComparison.Ordinal) && p.EndsWith(".gz", StringComparison.Ordinal);
         await Throws<IOException>(() => bad.Coordinator.BackupAsync());
-        Check(!bad.Provider.Files.Keys.Any(k => k.StartsWith("v1/snapshots/") && k.EndsWith("manifest.json")), "失败仍发布可恢复版本");
+        Check(!bad.Provider.Files.Keys.Any(k => (k.StartsWith("v1/snapshots/") || k.StartsWith("v2/snapshots/")) && k.EndsWith("manifest.json")), "失败仍发布可恢复版本");
         Check((await good.Coordinator.ListSnapshotsAsync()).Count == 1 && snapshot.Games.Single().LocalDirectory is null, "非本地条目备份被遗漏");
     }
     private static async Task SaveHistoryAsync()
@@ -349,7 +379,8 @@ internal static class EngineTests
     private static async Task DownloadValidationAsync()
     {
         var setup = Coordinator(BackupContent.GameInfo, Game()); var snapshot = await setup.Coordinator.BackupAsync();
-        setup.Provider.Files[snapshot.Data!.Path] = Encoding.UTF8.GetBytes("corrupted");
+        string dataPath = snapshot.Data?.Path ?? IncrementalObjectPath(snapshot.DataRecipe!, snapshot.DataRecipe!.Files[0]);
+        setup.Provider.Files[dataPath] = Encoding.UTF8.GetBytes("corrupted");
         await Throws<InvalidDataException>(() => setup.Coordinator.StageRestoreAsync(snapshot, BackupContent.GameInfo));
         Check(setup.Host.ImportCalls == 0, "损坏资料包进入了宿主导入");
         snapshot.ManifestPath = "v1/../bad/manifest.json";
@@ -384,7 +415,7 @@ internal static class EngineTests
             "无来源ID存档没有匹配恢复后的资料条目");
         restoredGame.LocalDirectory = Work(); pendingC.Refresh([restoredGame], settingsC.GameMappings);
         Check(pendingC.Items.Single().Status == RestoreStatus.Ready, "关联本地目录后存档未就绪");
-        await SaveArchiveService.RestoreAsync(pendingC.Items.Single(), pendingC.ArchivePath(savedManifest), restoredGame, Work());
+        await SaveArchiveService.RestoreAsync(pendingC.Items.Single(), pendingC.ArchivePath(pendingC.Items.Single().Manifest), restoredGame, Work());
         Check(await File.ReadAllTextAsync(Path.Combine(restoredGame.LocalDirectory, "savedata", "slot.dat")) == "original-progress",
             "跨设备映射后的真实存档内容没有恢复");
     }

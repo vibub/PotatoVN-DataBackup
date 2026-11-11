@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 namespace PotatoVN.Backup.Core.Engine;
 
 /// <summary>只把已完成的数据包发布为备份版本；软件历史与存档历史分别维护。</summary>
-public sealed class BackupCoordinator
+public sealed partial class BackupCoordinator
 {
     private readonly string _root;
     private readonly IBackupHost _host;
@@ -32,7 +32,9 @@ public sealed class BackupCoordinator
     private static string NewId() => DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "_" + Guid.NewGuid().ToString("N");
     private string Work() { string path = Path.Combine(_root, "work", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(path); return path; }
 
-    public async Task<SnapshotManifest> BackupAsync(CancellationToken ct = default)
+    public Task<SnapshotManifest> BackupAsync(CancellationToken ct = default) => BackupIncrementalAsync(ct);
+
+    private async Task<SnapshotManifest> BackupLegacyAsync(CancellationToken ct = default)
     {
         if (Settings.Content == BackupContent.None) throw new InvalidOperationException("请至少选择一种备份内容。");
         ProviderProfile profile = ActiveProfile;
@@ -161,7 +163,9 @@ public sealed class BackupCoordinator
     private static SaveLocation CloneLocation(SaveLocation value) => new()
     { Id = value.Id, BaseKind = value.BaseKind, RelativePath = value.RelativePath, IsFile = value.IsFile, CustomPath = value.CustomPath };
 
-    public async Task<IReadOnlyList<SnapshotManifest>> ListSnapshotsAsync(CancellationToken ct = default)
+    public Task<IReadOnlyList<SnapshotManifest>> ListSnapshotsAsync(CancellationToken ct = default) => ListIncrementalSnapshotsAsync(ct);
+
+    private async Task<IReadOnlyList<SnapshotManifest>> ListLegacySnapshotsAsync(CancellationToken ct = default)
     {
         using IBackupProvider provider = _providers(ActiveProfile);
         string work = Work();
@@ -195,7 +199,10 @@ public sealed class BackupCoordinator
         return saves;
     }
 
-    public async Task StageRestoreAsync(SnapshotManifest snapshot, BackupContent content, CancellationToken ct = default,
+    public Task StageRestoreAsync(SnapshotManifest snapshot, BackupContent content, CancellationToken ct = default,
+        RestoreMatchingDecisions? matching = null) => StageIncrementalRestoreAsync(snapshot, content, ct, matching);
+
+    private async Task StageLegacyRestoreAsync(SnapshotManifest snapshot, BackupContent content, CancellationToken ct = default,
         RestoreMatchingDecisions? matching = null)
     {
         ValidateSnapshot(snapshot, snapshot.ManifestPath);

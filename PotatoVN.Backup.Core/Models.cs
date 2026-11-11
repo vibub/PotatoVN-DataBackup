@@ -105,11 +105,19 @@ public sealed class FileRecord
     public string Sha256 { get; set; } = "";
 }
 
+// A complete archive recipe; file payloads are immutable compressed objects owned by one device.
+public sealed class ArchiveRecipe
+{
+    public Guid DeviceId { get; set; }
+    public List<FileRecord> Files { get; set; } = [];
+}
+
 public sealed class SaveManifest
 {
     public int FormatVersion { get; set; } = 1;
     public string Id { get; set; } = "";
     public Guid DeviceId { get; set; }
+    public Guid? SourceDeviceId { get; set; }
     public GameIdentity Game { get; set; } = new();
     public DateTimeOffset CapturedUtc { get; set; }
     public string ManifestPath { get; set; } = "";
@@ -119,6 +127,7 @@ public sealed class SaveManifest
     public long Length { get; set; }
     public List<SaveLocation> Locations { get; set; } = [];
     public List<FileRecord> Files { get; set; } = [];
+    public ArchiveRecipe? Recipe { get; set; }
 }
 
 public sealed class SnapshotManifest
@@ -132,6 +141,8 @@ public sealed class SnapshotManifest
     public string ManifestPath { get; set; } = "";
     public FileRecord? Data { get; set; }
     public FileRecord? Media { get; set; }
+    public ArchiveRecipe? DataRecipe { get; set; }
+    public ArchiveRecipe? MediaRecipe { get; set; }
     public List<GameIdentity> Games { get; set; } = [];
     public List<string> SaveManifestPaths { get; set; } = [];
     public List<string> Notices { get; set; } = [];
