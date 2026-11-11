@@ -16,6 +16,14 @@
 
 未配置存档位置的游戏不会被插件擅自扫描整个游戏目录。宿主提供的有效存档位置及游戏目录内直接的 `save` 文件夹会作为候选展示，悬停可查看完整路径，点击“检查并添加…”并保存后才参与备份；刷新或“重新检查存档位置”会重新获取候选。也可直接选择实际存档文件夹或单个文件，插件自动识别相对路径规则。选择器优先打开当前游戏关联的根目录；未关联或目录失效时，回退到上次使用的位置。文件和文件夹分别记住浏览位置，编辑弹窗中的浏览按钮遵循相同规则。例如安装目录为 `D:\Games\某游戏` 时，实际存档可以是 `D:\Games\某游戏\save`，备份位置明确显示后者。
 
+## 备份进度与本机目录
+
+状态页的“云备份任务”覆盖导出、整理、资料/图片/存档上传、完整版本发布及历史清理；可在状态页或插件底部取消。百分比按处理阶段分配，上传阶段随已处理文件更新，同时显示上传、复用文件数及成功上传字节，不表示预计剩余时间。
+
+“导出数据任务完成”只表示宿主已经生成中间 ZIP；它后面仍需整理和上传，不能据此判断云备份成功。完整流程结束后才显示“云备份任务完成”，并可在“恢复备份”读取对应云端版本。每次任务的 `work/` 临时目录在结束（包括失败、取消）后清理，不长期保留每次备份的重复本地副本。下次备份、读取历史或准备恢复时，会额外回收超过24小时的异常退出工作目录；占用或权限问题会提示，下次操作再重试。清理仅针对插件生成的临时目录，待恢复存档、回滚副本、待导入文件、配置和凭据不在此范围内。导出通知里的中间 ZIP 路径不会永久保留。
+
+在“连接云盘 → 更多选项”点击“打开本机数据目录”，可直接找到配置、待恢复区和回滚副本。普通运行的数据目录位于 `%LOCALAPPDATA%\PotatoVN-DataBackup\<宿主数据目录标识>`；商店/MSIX 版本可能将它重定向到 `%LOCALAPPDATA%\Packages\<PotatoVN 包族名>\LocalCache\Local\PotatoVN-DataBackup\<标识>`。通知中的路径可能仍为重定向前的路径，找不到该表面路径不代表没有创建本机数据。
+
 ## 可以选择的内容
 
 游戏信息、封面、评价与评论（含游玩状态）、游玩时间与次数、角色资料与图片、头图、游戏库与分类、制作人员、主页布局、常规设置、游戏存档。
@@ -103,6 +111,12 @@ dotnet run --project tests/RestoreMatchingChecks/RestoreMatchingChecks.csproj
 
 # 三渠道模拟协议、凭据及仓库边界（不连接真实账号）
 dotnet run --project tests/ProviderProtocolChecks/ProviderProtocolChecks.csproj
+
+# 宿主/插件分离加载 LiteDB 的兼容检查（只用合成数据库）
+dotnet run --project tests/HostInteropChecks/HostInteropChecks.csproj
+
+# 本机临时文件生命周期与异常退出回收检查
+dotnet run --project tests/LocalWorkCleanupChecks/LocalWorkCleanupChecks.csproj
 
 # 本机原子配置读写检查
 dotnet run --project tests/FilePersistenceChecks/FilePersistenceChecks.csproj

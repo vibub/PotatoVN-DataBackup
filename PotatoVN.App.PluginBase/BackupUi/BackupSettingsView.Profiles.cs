@@ -105,6 +105,7 @@ public sealed partial class BackupSettingsView
         advanced.Children.Add(_profileName);
         advanced.Children.Add(_tenant);
         advanced.Children.Add(_repositoryNote);
+        advanced.Children.Add(ActionButton("打开本机数据目录", async _ => await _controller.OpenDataFolderAsync(), trackBusy: false));
         panel.Children.Add(new Expander { Header = "更多选项", Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         _profilePick.SelectionChanged += async (_, _) =>
         {

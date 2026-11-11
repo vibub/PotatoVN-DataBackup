@@ -202,6 +202,8 @@ public sealed partial class BackupSettingsView : UserControl
     {
         bool busy = _operationCts != null || _controller.IsBusy;
         _progress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        _progress.IsIndeterminate = _controller.BackupProgressPercent == null;
+        _progress.Value = _controller.BackupProgressPercent ?? 0;
         _cancel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         _cancel.IsEnabled = _operationCts is { IsCancellationRequested: false } || _controller.IsBusy;
         foreach (Control control in _operationControls) control.IsEnabled = !busy;

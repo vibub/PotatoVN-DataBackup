@@ -50,6 +50,13 @@ public sealed class PotatoHostAdapter : IBackupHost
         Directory.CreateDirectory(_stateRoot);
     }
 
+    public async Task OpenDataFolderAsync()
+    {
+        Windows.Storage.StorageFolder folder = await Windows.Storage.StorageFolder.GetFolderFromPathAsync(_stateRoot);
+        if (!await Windows.System.Launcher.LaunchFolderAsync(folder))
+            throw new IOException("无法打开本机数据目录。");
+    }
+
     private object Service(string typeName)
     {
         Type type = _hostAssembly.GetType(typeName, true)!;
@@ -136,10 +143,10 @@ public sealed class PotatoHostAdapter : IBackupHost
             values[key] = value == null ? null : JsonNode.Parse(Newtonsoft.Json.JsonConvert.SerializeObject(value));
         }
         // 上游 ExportTask 只复制旧主页 JSON；新版主页已迁至 LiteDB，需要补齐。
-        LiteDatabase live = (LiteDatabase)Property(_settings, "Database");
+        var live = new HostDatabaseReader(Property(_settings, "Database"));
         if (live.CollectionExists("homepage_list"))
         {
-            BsonArray home = new(live.GetCollection("homepage_list").FindAll().Select(d => (BsonValue)d));
+            BsonArray home = new(live.ReadDocuments("homepage_list").Select(d => (BsonValue)d));
             using ZipArchive zip = ZipFile.Open(archive, ZipArchiveMode.Update);
             zip.GetEntry("data.homepage_list.json")?.Delete();
             using StreamWriter homeWriter = new(zip.CreateEntry("data.homepage_list.json").Open());
@@ -198,7 +205,7 @@ public sealed class PotatoHostAdapter : IBackupHost
         string prepared = Path.Combine(stage, "prepared.zip");
         File.Copy(mergedArchivePath, prepared);
         string databasePath = Path.Combine(stage, "pvn_data.db");
-        LiteDatabase liveDb = (LiteDatabase)Property(_settings, "Database");
+        var liveDb = new HostDatabaseReader(Property(_settings, "Database"));
         string[] rebuilt = ["galgame", "source", "category", "category_group", "staff", "multi_stream", "multi_stream_page", "multistream", "homepage_list"];
         using (ZipArchive nativeZip = ZipFile.OpenRead(prepared))
         {
@@ -223,10 +230,10 @@ public sealed class PotatoHostAdapter : IBackupHost
         }
         using (LiteDatabase database = new(databasePath))
         {
-            foreach (string name in liveDb.GetCollectionNames().Where(n => !rebuilt.Contains(n, StringComparer.OrdinalIgnoreCase)).ToArray())
+            foreach (string name in liveDb.CollectionNames().Where(n => !rebuilt.Contains(n, StringComparer.OrdinalIgnoreCase)).ToArray())
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                List<BsonDocument> records = liveDb.GetCollection(name).FindAll().ToList();
+                List<BsonDocument> records = liveDb.ReadDocuments(name).ToList();
                 if (records.Count > 0) database.GetCollection(name).InsertBulk(records);
             }
         }

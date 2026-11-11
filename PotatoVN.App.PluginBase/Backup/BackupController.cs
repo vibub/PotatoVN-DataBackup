@@ -29,6 +29,8 @@ public sealed class BackupController : IBackupUiController, IDisposable
     private readonly Dictionary<string, Guid> _listedProfiles = new(StringComparer.Ordinal);
     public BackupSettings Settings { get; }
     public bool IsBusy { get; private set; }
+    public int? BackupProgressPercent { get; private set; }
+    public Task OpenDataFolderAsync() => _host.OpenDataFolderAsync();
     public string Status { get; private set; } = "尚未开始备份。";
     public event Action? StateChanged;
     private PendingRestore[] _pendingView = Array.Empty<PendingRestore>();
@@ -44,6 +46,7 @@ public sealed class BackupController : IBackupUiController, IDisposable
         _api = api; _host = host; _store = store; Settings = settings; _pending = pending;
         _secrets = new DpapiSecretStore(Path.Combine(host.StateRoot, "secrets"));
         _coordinator = new BackupCoordinator(host.StateRoot, host, settings, store, pending, p => BackupProviderFactory.Create(p, _secrets));
+        _coordinator.BackupProgress += (percent, _) => BackupProgressPercent = percent;
         _coordinator.Progress += text => { Status = text; Changed(); };
         Changed();
         _ = WatchAsync();
@@ -107,7 +110,18 @@ public sealed class BackupController : IBackupUiController, IDisposable
 
     private Task BackupAsync(CancellationToken ct, bool automatic) => RunAsync("正在备份…", async token =>
     {
-        await _coordinator.BackupAsync(token, automatic);
+        using var task = new CloudBackupTask(async backupToken =>
+        {
+            await Task.Run(() => _coordinator.BackupAsync(backupToken, automatic), backupToken);
+        }, () => Status, token);
+        _coordinator.BackupProgress += task.Report;
+        try
+        {
+            Task registered = await _host.OnMainAsync(() => _api.AddBgTask(task));
+            await registered;
+            await task.Task; // 宿主任务服务会吞掉异常，必须继续检查原任务。
+        }
+        finally { _coordinator.BackupProgress -= task.Report; }
     }, ct);
 
     public async Task<IReadOnlyList<SnapshotManifest>> ListSnapshotsAsync(CancellationToken ct)
@@ -217,11 +231,11 @@ public sealed class BackupController : IBackupUiController, IDisposable
     {
         if (!await _gate.WaitAsync(0, ct)) throw new InvalidOperationException("已有云备份任务正在运行。");
         using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token);
-        _current = linked; IsBusy = true; Status = initial; Changed();
+        _current = linked; IsBusy = true; BackupProgressPercent = null; Status = initial; Changed();
         try { await action(linked.Token); }
         catch (OperationCanceledException) { Status = "操作已取消；已经完成的版本和游戏存档仍会保留。"; throw; }
         catch (Exception e) { Status = e.Message; _api.Log(InfoBarSeverity.Error, "云备份：" + e.Message); throw; }
-        finally { _current = null; IsBusy = false; _gate.Release(); Changed(); }
+        finally { _current = null; IsBusy = false; BackupProgressPercent = null; _gate.Release(); Changed(); }
     }
 
     public IReadOnlyList<SavePathSuggestion> GetSavePathSuggestions(Guid gameId)

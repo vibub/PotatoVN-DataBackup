@@ -14,7 +14,7 @@ public sealed partial class BackupCoordinator
         string work = Work();
         try
         {
-            Report("正在检查增量备份仓库…");
+            ReportBackup(2, "正在检查云端备份…");
             await provider.ProbeAsync(ct);
             if (!await RemoteCommit.IsReadyAsync(provider, "v2/repository.json", work, ct))
                 await PutIncrementalJsonAsync(provider, "v2/repository.json", new { formatVersion = 2 }, work, ct);
@@ -29,6 +29,15 @@ public sealed partial class BackupCoordinator
             HashSet<string> committed = published.SelectMany(SnapshotRecipes).Concat(saves.Where(save => save.Recipe != null).Select(save => save.Recipe!))
                 .SelectMany(IncrementalArchiveStore.ObjectPaths).ToHashSet(StringComparer.Ordinal);
             var archives = new IncrementalArchiveStore(provider, work, committed);
+            async Task<ArchiveRecipe> UploadAsync(string archive, int start, int end, string label)
+            {
+                void Update(int current, int total) => ReportBackup(start + (end - start) * current / total,
+                    $"{label}：{current}/{total} 个文件；上传 {archives.UploadedFiles}，复用 {archives.ReusedFiles}，已上传 {archives.UploadedBytes:N0} 字节。");
+                ReportBackup(start, label + "…");
+                archives.UploadProgress += Update;
+                try { return await archives.UploadAsync(archive, Settings.DeviceId, ct); }
+                finally { archives.UploadProgress -= Update; }
+            }
             int reusedSaveFiles = 0;
             IReadOnlyList<GameIdentity> all = _host.GetGames();
             List<GameIdentity> selected = all.Where(Settings.IncludesGame).ToList();
@@ -42,18 +51,22 @@ public sealed partial class BackupCoordinator
             snapshot.ManifestPath = $"v2/snapshots/{Settings.DeviceId:N}/{snapshot.Id}/manifest.json";
             if ((content & ~BackupContent.Saves) != BackupContent.None)
             {
-                Report("正在检查所选资料和图片的变化…");
+                ReportBackup(10, "正在导出软件资料…");
                 HostExport exported = await _host.ExportAsync(Path.Combine(work, "export"), ct);
+                ReportBackup(25, "正在整理所选资料和图片…");
                 SoftwarePackage package = await SoftwareBackupCodec.CreateAsync(exported, Settings, all, Path.Combine(work, "software"), ct, content);
                 snapshot.Games = package.Games.ToList();
-                if (package.DataPath != null) snapshot.DataRecipe = await archives.UploadAsync(package.DataPath, Settings.DeviceId, ct);
-                if (package.MediaPath != null) snapshot.MediaRecipe = await archives.UploadAsync(package.MediaPath, Settings.DeviceId, ct);
+                if (package.DataPath != null) snapshot.DataRecipe = await UploadAsync(package.DataPath, 30, 40, "正在上传资料");
+                if (package.MediaPath != null) snapshot.MediaRecipe = await UploadAsync(package.MediaPath, 40, 55, "正在上传图片");
             }
+            int processedGames = 0;
             if (content.HasFlag(BackupContent.Saves))
                 foreach (GameIdentity game in selected)
                 {
                     ct.ThrowIfCancellationRequested();
-                    Report($"正在检查存档变化：{game.Name}");
+                    int start = 55 + 33 * processedGames / selected.Count;
+                    int end = 55 + 33 * ++processedGames / selected.Count;
+                    ReportBackup(start, $"正在检查存档（{processedGames}/{selected.Count}）：{game.Name}");
                     Guid canonicalId = Settings.GameMappings.LastOrDefault(mapping => mapping.LocalGameId == game.Id)?.BackupGameId ?? game.Id;
                     SaveManifest? latest = await FindReadableSaveAsync(provider, archives,
                         saves.Where(save => save.Game.Id == canonicalId && save.DeviceId == Settings.DeviceId), ct);
@@ -95,7 +108,7 @@ public sealed partial class BackupCoordinator
                         created.FormatVersion = 2;
                         created.Id = NewId();
                         created.ManifestPath = $"v2/saves/{canonicalId:N}/{Settings.DeviceId:N}/{created.Id}/manifest.json";
-                        created.Recipe = await archives.UploadAsync(local, Settings.DeviceId, ct);
+                        created.Recipe = await UploadAsync(local, start, end, $"正在上传存档：{game.Name}");
                         created.ArchivePath = "";
                         created.Sha256 = "";
                         created.Length = created.Files.Sum(file => file.Length);
@@ -105,15 +118,16 @@ public sealed partial class BackupCoordinator
                         snapshot.SaveManifestPaths.Add(created.ManifestPath);
                     }
                 }
-            Report("正在发布完整增量备份清单…");
+            ReportBackup(90, "正在发布完整备份…");
             await PutIncrementalJsonAsync(provider, snapshot.ManifestPath, snapshot, work, ct);
             Settings.LastSuccessfulBackupUtc = DateTimeOffset.UtcNow;
             await _settingsStore.SaveAsync(Settings);
+            ReportBackup(95, "备份已发布，正在清理过期历史…");
             // User approved automatic retention after planner and deletion-failure regressions passed.
             try { await PruneIncrementalAsync(provider, work, ct); }
             catch (Exception error) when (error is IOException or HttpRequestException or InvalidDataException or OperationCanceledException or JsonException)
             { snapshot.Notices.Add("备份已完成，历史清理未完成：" + error.Message); }
-            Report($"备份完成。本次上传 {archives.UploadedFiles} 个新增或变化文件，复用 {archives.ReusedFiles + reusedSaveFiles} 个文件；上传数据 {archives.UploadedBytes:N0} 字节。" + string.Join("；", snapshot.Notices));
+            ReportBackup(100, $"备份完成。本次上传 {archives.UploadedFiles} 个新增或变化文件，复用 {archives.ReusedFiles + reusedSaveFiles} 个文件；上传数据 {archives.UploadedBytes:N0} 字节。" + string.Join("；", snapshot.Notices));
             return snapshot;
         }
         finally { RemoveWork(work); }

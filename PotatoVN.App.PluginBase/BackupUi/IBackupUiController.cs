@@ -15,6 +15,8 @@ public interface IBackupUiController
     IReadOnlyList<PendingRestore> GetPending();
     long PendingBytes { get; }
     bool IsBusy { get; }
+    int? BackupProgressPercent => null;
+    Task OpenDataFolderAsync() => throw new NotSupportedException("无法打开本机数据目录。");
     string Status { get; }
     event Action? StateChanged;
     void CancelCurrentOperation();

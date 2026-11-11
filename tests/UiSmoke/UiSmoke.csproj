@@ -20,6 +20,8 @@
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.1.3" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.4948" />
     <ProjectReference Include="../../PotatoVN.Backup.Core/PotatoVN.Backup.Core.csproj" />
+    <ProjectReference Include="../../PotatoVN/GalgameManager.WinApp.Base/GalgameManager.WinApp.Base.csproj" />
+    <Compile Include="../../PotatoVN.App.PluginBase/Backup/CloudBackupTask.cs" Link="CloudBackupTask.cs" />
     <Compile Include="../../PotatoVN.App.PluginBase/BackupUi/*.cs" Link="BackupUi/%(Filename)%(Extension)" />
     <Content Include="../../PotatoVN/GalgameManager/Assets/default_character.jpg" Link="sample-cover.jpg" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>

@@ -396,7 +396,17 @@ internal static partial class EngineTests
     private static async Task IncrementalInitialAsync()
     {
         var fixture = NewIncremental();
+        var progress = new List<int>();
+        fixture.Coordinator.BackupProgress += (percent, _) =>
+        {
+            progress.Add(percent);
+            if (percent == 100)
+                Check(fixture.Remote.Successful.Any(transfer => transfer.Path.StartsWith("v2/snapshots/", StringComparison.Ordinal) &&
+                    transfer.Path.EndsWith("/manifest.json.complete", StringComparison.Ordinal)), "云端完整提交前报告了100%。");
+        };
         var snapshot = await fixture.Coordinator.BackupIncrementalAsync();
+        Check(progress.First() < 100 && progress.Last() == 100 && progress.SequenceEqual(progress.Order()), "整体进度未单调完成。");
+        Check(progress.Any(value => value > 30 && value < 55) && progress.Any(value => value >= 55 && value < 90), "资料、图片或存档上传没有进度。");
         Check(snapshot.FormatVersion == 2 && snapshot.ManifestPath.StartsWith("v2/snapshots/"), "新备份未使用v2清单。");
         Check(snapshot.Data == null && snapshot.Media == null && snapshot.DataRecipe != null && snapshot.MediaRecipe != null,
             "增量软件备份仍引用完整ZIP。");
@@ -545,6 +555,8 @@ internal static partial class EngineTests
             DateTimeOffset? successfulBefore = fixture.Settings.LastSuccessfulBackupUtc;
             int objectCalls = 0;
             using var cancellation = new CancellationTokenSource();
+            var progress = new List<int>();
+            fixture.Coordinator.BackupProgress += (percent, _) => progress.Add(percent);
             fixture.Remote.BeforeUpload = (path, _, token) =>
             {
                 if (!IsObject(path) || ++objectCalls != 2) return;
@@ -554,6 +566,7 @@ internal static partial class EngineTests
             if (cancel) await Throws<OperationCanceledException>(() => fixture.Coordinator.BackupIncrementalAsync(cancellation.Token));
             else await Throws<IOException>(() => fixture.Coordinator.BackupIncrementalAsync());
             fixture.Remote.BeforeUpload = null;
+            Check(!progress.Contains(100), "失败或取消的备份错误报告了100%。");
             Check(objectCalls == 2, "故障没有发生在已有一个对象上传成功之后。");
             var visible = await fixture.Coordinator.ListIncrementalSnapshotsAsync();
             Check(visible.Count == 1 && visible[0].ManifestPath == first.ManifestPath && fixture.Settings.LastSuccessfulBackupUtc == successfulBefore,

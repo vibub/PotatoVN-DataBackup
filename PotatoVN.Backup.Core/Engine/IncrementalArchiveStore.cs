@@ -13,6 +13,8 @@ public sealed class IncrementalArchiveStore
     private readonly Dictionary<string, string> _downloadedObjects = new(StringComparer.Ordinal);
     private static readonly DateTimeOffset ZipEpoch = new(1980, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
+    public event Action<int, int>? UploadProgress;
+
     public int UploadedFiles { get; private set; }
     public int ReusedFiles { get; private set; }
     public long UploadedBytes { get; private set; }
@@ -67,6 +69,7 @@ public sealed class IncrementalArchiveStore
                     UploadedBytes += new FileInfo(compressed).Length;
                 }
                 recipe.Files.Add(new FileRecord { Path = entry.FullName, Length = entry.Length, Sha256 = hash });
+                UploadProgress?.Invoke(recipe.Files.Count, entries.Length);
             }
             finally { if (File.Exists(compressed)) File.Delete(compressed); }
         }

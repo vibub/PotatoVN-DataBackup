@@ -48,6 +48,9 @@ public sealed partial class SmokeApp : Application
     }
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+#pragma warning disable CS0618
+        GalgameManager.WinApp.Base.Helpers.UiThreadInvokeHelper.Init(DispatcherQueue.GetForCurrentThread());
+#pragma warning restore CS0618
         var controller = new DemoController();
         var view = new BackupSettingsView(controller, () => WinRT.Interop.WindowNative.GetWindowHandle(_window!));
         // 模拟插件管理页：宿主标题占据一部分高度，设置控件位于外层滚动容器中。
@@ -125,6 +128,7 @@ public sealed partial class SmokeApp : Application
                 }
                 await CheckFeedbackScopeAsync(view, controller, navigation, results);
                 await CheckFeedbackExpiryAsync(view, results);
+                await CheckBackupTaskAsync(view, controller, results);
                 foreach (var size in new[] { (Width: 1440, Height: 900), (Width: 1080, Height: 760), (Width: 760, Height: 620), (Width: 620, Height: 540) })
                 {
                     // AppWindow 使用物理像素；按当前缩放换算后验证同等逻辑尺寸。
@@ -609,6 +613,10 @@ internal sealed class DemoController : IBackupUiController
     public bool ShowEmptyPending { get; set; }
     public IReadOnlyList<PendingRestore> GetPending() => ShowEmptyPending ? Array.Empty<PendingRestore>() : _pending;
     public long PendingBytes => 1024 * 1024 * 12;
+    public int? BackupProgressPercent { get; private set; }
+    public int OpenDataFolderCalls { get; private set; }
+    public Task OpenDataFolderAsync() { OpenDataFolderCalls++; return Task.CompletedTask; }
+    public void SetBackupProgress(int? percent) { IsBusy = percent != null; BackupProgressPercent = percent; StateChanged?.Invoke(); }
     public bool IsBusy { get; private set; }
     public string Status { get; private set; } = "隔离界面检查：使用合成资料，不连接云端或真实游戏库。";
     public event Action? StateChanged;

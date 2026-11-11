@@ -14,6 +14,12 @@ public sealed partial class BackupCoordinator
     public BackupSettings Settings { get; }
     public PendingRestoreStore Pending { get; }
     public event Action<string>? Progress;
+    public event Action<int, string>? BackupProgress;
+    private void ReportBackup(int percent, string text)
+    {
+        BackupProgress?.Invoke(percent, text);
+        Report(text);
+    }
 
     public BackupCoordinator(string localRoot, IBackupHost host, BackupSettings settings,
         SettingsStore settingsStore, PendingRestoreStore pending, Func<ProviderProfile, IBackupProvider> providers)
@@ -30,7 +36,15 @@ public sealed partial class BackupCoordinator
         ?? throw new InvalidOperationException("请先添加并选择一个备份渠道。");
     private void Report(string text) => Progress?.Invoke(text);
     private static string NewId() => DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ") + "_" + Guid.NewGuid().ToString("N");
-    private string Work() { string path = Path.Combine(_root, "work", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(path); return path; }
+    private string Work()
+    {
+        try { LocalWorkCleanup.RemoveExpired(_root, DateTimeOffset.UtcNow); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { Report("本机临时文件清理未完成：" + error.Message); }
+        string path = Path.Combine(_root, "work", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
+        return path;
+    }
 
     public Task<SnapshotManifest> BackupAsync(CancellationToken ct = default, bool automatic = false) => BackupIncrementalAsync(ct, automatic);
 
