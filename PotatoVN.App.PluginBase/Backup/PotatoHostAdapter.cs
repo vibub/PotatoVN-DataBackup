@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -86,6 +86,12 @@ public sealed class PotatoHostAdapter : IBackupHost
             SourceIds = Enum.GetValues<RssType>().Distinct().Where(r => (int)r >= 0 && (int)r < g.Ids.Length && !string.IsNullOrWhiteSpace(g.Ids[(int)r]))
                 .ToDictionary(r => r.ToString(), r => g.Ids[(int)r]!)
         }).ToList();
+    }).GetAwaiter().GetResult();
+
+    public string? GetGameCoverPath(Guid gameId) => OnMainAsync(() =>
+    {
+        string? path = _api.GetAllGames().FirstOrDefault(game => game.Uuid == gameId)?.ImagePath.Value;
+        return path == Galgame.DefaultImagePath ? null : path;
     }).GetAwaiter().GetResult();
 
     public string? GetSuggestedSavePath(Guid gameId) => GetSuggestedSavePaths(gameId).FirstOrDefault();

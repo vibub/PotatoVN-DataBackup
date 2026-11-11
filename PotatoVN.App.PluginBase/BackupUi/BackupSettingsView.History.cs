@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -14,8 +14,8 @@ public sealed partial class BackupSettingsView
 {
     private readonly ListView _snapshotList = new() { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 280 };
     private readonly TextBlock _snapshotDetails = Note("读取云端备份后选择版本。");
-    private readonly ComboBox _mapBackupGame = new() { Header = "备份中的游戏", HorizontalAlignment = HorizontalAlignment.Stretch };
-    private readonly ComboBox _mapLocalGame = new() { Header = "本机对应的游戏", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly GameSearchPicker _mapBackupGame = new("备份中的游戏");
+    private readonly GameSearchPicker _mapLocalGame = new("本机对应的游戏");
     private readonly StackPanel _libraryRows = Stack(16);
     private readonly Dictionary<string, string> _libraryTargetDrafts = new();
     private Guid? _historyProfileId;
@@ -50,14 +50,17 @@ public sealed partial class BackupSettingsView
         mappingActions.Children.Add(ActionButton("保存对应关系", async ct =>
         {
             RequireSnapshot();
-            if (Choice(_mapBackupGame) is not Guid backupId || Choice(_mapLocalGame) is not Guid localId)
+            if (_mapBackupGame.HasPendingQuery || _mapLocalGame.HasPendingQuery)
+                throw new InvalidOperationException("请从搜索结果中确认对应游戏。");
+            if (_mapBackupGame.SelectedId is not Guid backupId || _mapLocalGame.SelectedId is not Guid localId)
                 throw new InvalidOperationException("请分别选择备份游戏和本机游戏。");
             await _controller.ConfigureGameMappingAsync(backupId, localId, ct);
         }, successMessage: "游戏对应关系已保存。"));
         mappingActions.Children.Add(ActionButton("改为自动识别", async _ =>
         {
             RequireSnapshot();
-            if (Choice(_mapBackupGame) is not Guid backupId) throw new InvalidOperationException("请选择备份中的游戏。");
+            if (_mapBackupGame.HasPendingQuery || _mapBackupGame.SelectedId is not Guid backupId)
+                throw new InvalidOperationException("请从搜索结果中选择备份中的游戏。");
             _controller.Settings.GameMappings.RemoveAll(item => item.BackupGameId == backupId);
             await _controller.SaveSettingsAsync();
             RefreshGameMappingChoices();
@@ -118,24 +121,19 @@ public sealed partial class BackupSettingsView
 
     private void RefreshGameMappingChoices()
     {
-        object? old = Choice(_mapBackupGame);
-        _mapBackupGame.Items.Clear();
-        if (_snapshotList.SelectedItem is SnapshotChoice row)
-            foreach (GameIdentity game in row.Snapshot.Games.OrderBy(g => g.Name, StringComparer.CurrentCultureIgnoreCase))
-                AddChoice(_mapBackupGame, game.Id, game.Name + (game.SourceIds.Count > 0 ? " · " + string.Join(" / ", game.SourceIds.Select(p => $"{p.Key}: {p.Value}")) : ""));
-        SelectChoice(_mapBackupGame, old);
-        if (_mapBackupGame.SelectedItem == null && _mapBackupGame.Items.Count > 0) _mapBackupGame.SelectedIndex = 0;
-        _mapLocalGame.Items.Clear();
-        foreach (GameIdentity game in _controller.GetGames().OrderBy(g => g.Name, StringComparer.CurrentCultureIgnoreCase))
-            AddChoice(_mapLocalGame, game.Id, GameLabel(game));
+        Guid? previous = _mapBackupGame.SelectedId;
+        var cloud = _snapshotList.SelectedItem is SnapshotChoice row ? row.Snapshot.Games : new List<GameIdentity>();
+        _mapBackupGame.SetItems(cloud.OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase).Select(GameSearchItem.FromCloudGame),
+            cloud.Any(game => game.Id == previous) ? previous : cloud.FirstOrDefault()?.Id);
+        _mapLocalGame.SetItems(_controller.GetGames().OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase).Select(GameSearchItem.FromGame), null);
         SelectSavedGameMapping();
     }
 
     private void SelectSavedGameMapping()
     {
-        if (Choice(_mapBackupGame) is not Guid backupId) return;
+        if (_mapBackupGame.SelectedId is not Guid backupId) return;
         GameMatchMapping? mapping = _controller.Settings.GameMappings.FirstOrDefault(m => m.BackupGameId == backupId);
-        SelectChoice(_mapLocalGame, mapping?.LocalGameId);
+        _mapLocalGame.SelectedId = mapping?.LocalGameId;
     }
 
     private StackPanel BuildLibraryTab()

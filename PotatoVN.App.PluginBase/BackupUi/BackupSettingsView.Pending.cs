@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -140,20 +140,41 @@ public sealed partial class BackupSettingsView
             if (statusFilter != "all" && statusFilter != entry.Status.ToString()) continue;
             string description = $"{entry.Manifest.Game.Name} {entry.ProfileName} {entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} {entry.TargetPath}";
             if (search.Length > 0 && !description.Contains(search, StringComparison.CurrentCultureIgnoreCase)) continue;
-            var content = Stack(4);
-            content.Children.Add(Heading($"{entry.Manifest.Game.Name} · {StateLabel(entry.Status)}{(entry.IsBusy ? " · 正在使用" : "")}", "BodyStrongTextBlockStyle"));
-            content.Children.Add(Note($"{entry.ProfileName} · {entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} · 存档包 {SizeLabel(entry.Manifest.Length)}"));
+            var content = Stack(8);
+            var badges = Row();
+            var title = Heading(entry.Manifest.Game.Name, "BodyStrongTextBlockStyle");
+            title.MaxLines = 2;
+            title.TextTrimming = TextTrimming.CharacterEllipsis;
+            badges.Children.Add(title);
+            StatusTone tone = entry.Status switch
+            {
+                RestoreStatus.Ready => StatusTone.Info,
+                RestoreStatus.Restored => StatusTone.Success,
+                RestoreStatus.Failed => StatusTone.Error,
+                _ => StatusTone.Warning
+            };
+            badges.Children.Add(StatusBadge(StateLabel(entry.Status), tone));
+            if (entry.IsBusy) badges.Children.Add(StatusBadge("正在使用"));
+            content.Children.Add(badges);
+            var metadata = Row();
+            metadata.Children.Add(SecondaryText(entry.ProfileName));
+            metadata.Children.Add(SecondaryText(entry.Manifest.CapturedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")));
+            metadata.Children.Add(SecondaryText(SizeLabel(entry.Manifest.Length)));
+            content.Children.Add(metadata);
             SaveLocation? location = entry.Manifest.Locations.FirstOrDefault(l => l.Id == entry.LocationId);
-            if (location != null) content.Children.Add(Note($"{(location.IsFile ? "文件" : "目录")} · {SaveBaseLabel(location.BaseKind)}{(string.IsNullOrWhiteSpace(location.RelativePath) ? "" : "\\" + location.RelativePath)}"));
-            content.Children.Add(Note(string.IsNullOrWhiteSpace(entry.TargetPath) ? "目标位置尚未确定" : $"目标：{entry.TargetPath}"));
-            if (!string.IsNullOrWhiteSpace(entry.Error)) content.Children.Add(Note(entry.Error));
-            var item = new ListViewItem { Content = content, Tag = entry, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+            if (!string.IsNullOrWhiteSpace(entry.TargetPath)) content.Children.Add(PathLine("存档", entry.TargetPath));
+            else if (location != null)
+                content.Children.Add(PathLine("备份位置", SaveBaseLabel(location.BaseKind) +
+                    (string.IsNullOrWhiteSpace(location.RelativePath) ? "" : "\\" + location.RelativePath)));
+            if (!string.IsNullOrWhiteSpace(entry.Error)) content.Children.Add(SecondaryText(entry.Error));
+            var item = new ListViewItem { Content = content, Tag = entry, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+                Padding = new Thickness(12), Margin = new Thickness(0, 0, 0, 10) };
             _pendingList.Items.Add(item);
             if (selected.Contains(entry.Id)) _pendingList.SelectedItems.Add(item);
         }
         _pendingEmpty.Visibility = _pendingList.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         _pendingEmpty.Text = entries.Count == 0
-            ? "暂无待恢复存档。可从“恢复备份”下载。"
+            ? "暂无待恢复存档。"
             : "没有符合筛选条件的存档。";
         UpdatePendingSelection();
     }
@@ -169,12 +190,10 @@ public sealed partial class BackupSettingsView
         Guid[] ids = SelectedPendingIds();
         if (ids.Length != 1) throw new InvalidOperationException("请只选择一个存档位置，再设置对应游戏与目标。");
         PendingRestore entry = _controller.GetPending().First(p => p.Id == ids[0]);
-        var game = new ComboBox { Header = "对应的本机游戏", HorizontalAlignment = HorizontalAlignment.Stretch };
-        AddChoice(game, null, "自动识别对应条目");
-        foreach (GameIdentity candidate in _controller.GetGames().OrderBy(g => g.Name, StringComparer.CurrentCultureIgnoreCase))
-            AddChoice(game, candidate.Id, GameLabel(candidate));
-        SelectChoice(game, entry.LocalGameId);
-        if (game.SelectedItem == null) game.SelectedIndex = 0;
+        var game = new GameSearchPicker("对应的本机游戏");
+        game.SetItems(new[] { new GameSearchItem(null, "自动识别对应条目", "保留自动识别规则") }
+            .Concat(_controller.GetGames().OrderBy(candidate => candidate.Name, StringComparer.CurrentCultureIgnoreCase).Select(GameSearchItem.FromGame)),
+            entry.LocalGameId);
         var target = TextInput("本机目标路径", "留空则按备份位置规则解析");
         target.Text = entry.TargetOverride ?? "";
         var body = Stack();
@@ -189,7 +208,7 @@ public sealed partial class BackupSettingsView
         {
             try
             {
-                GameIdentity? selectedGame = Choice(game) is Guid selectedId ? _controller.GetGames().FirstOrDefault(g => g.Id == selectedId) : null;
+                GameIdentity? selectedGame = game.SelectedId is Guid selectedId ? _controller.GetGames().FirstOrDefault(g => g.Id == selectedId) : null;
                 string? actual = location == null ? null : SaveArchiveService.Resolve(location, selectedGame, string.IsNullOrWhiteSpace(target.Text) ? null : target.Text.Trim());
                 resolved.Text = actual == null ? "请选择已关联本机目录的游戏，并补全目标路径。" : $"将恢复到：{actual}";
             }
@@ -204,6 +223,13 @@ public sealed partial class BackupSettingsView
         var dialog = NewDialog("设置存档恢复位置", body, "保存对应关系");
         dialog.PrimaryButtonClick += (_, args) =>
         {
+            if (game.HasPendingQuery)
+            {
+                error.Message = "请从搜索结果中选择游戏，或明确选择自动识别。";
+                error.IsOpen = true;
+                args.Cancel = true;
+                return;
+            }
             if (string.IsNullOrWhiteSpace(target.Text) || Path.IsPathFullyQualified(target.Text.Trim())) return;
             error.Message = "请填写完整绝对路径，或留空使用自动解析的目标。";
             error.IsOpen = true;
@@ -211,7 +237,7 @@ public sealed partial class BackupSettingsView
         };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary)
             return;
-        await _controller.ConfigurePendingAsync(entry.Id, Choice(game) is Guid gameId ? gameId : null,
+        await _controller.ConfigurePendingAsync(entry.Id, game.SelectedId is Guid gameId ? gameId : null,
             string.IsNullOrWhiteSpace(target.Text) ? null : target.Text.Trim(), ct);
         await _controller.RefreshPendingAsync(ct);
     }

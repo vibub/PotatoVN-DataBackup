@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -35,6 +35,7 @@ public sealed class BackupController : IBackupUiController, IDisposable
     private long _pendingBytes;
     public long PendingBytes => Interlocked.Read(ref _pendingBytes);
     public IReadOnlyList<GameIdentity> GetGames() => _host.GetGames();
+    public string? GetGameCoverPath(Guid gameId) => _host.GetGameCoverPath(gameId);
     public IReadOnlyList<PendingRestore> GetPending() => Volatile.Read(ref _pendingView);
 
     public BackupController(IPotatoVnApi api, PotatoHostAdapter host, SettingsStore store,

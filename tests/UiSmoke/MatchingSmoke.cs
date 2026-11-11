@@ -42,7 +42,7 @@ public sealed partial class SmokeApp
         {
             var preview = Preview(view, unmatched, BackupContent.GameInfo, cancellation.Token);
             ContentDialog dialog = await WaitDialogAsync(view, "确认未匹配的本地游戏");
-            Check(FindAll<ComboBox>(dialog).Count() == 2, "未匹配弹窗应展示两个本地条目");
+            Check(FindAll<GameSearchPicker>(dialog).Count() == 2, "未匹配弹窗应展示两个本地条目");
             await CaptureAsync(dialog, "matching-unmatched.png");
             cancellation.Cancel();
             await ExpectCancelled(preview);
@@ -63,7 +63,7 @@ public sealed partial class SmokeApp
         {
             var preview = Preview(view, occupied, BackupContent.GameInfo, cancellation.Token);
             ContentDialog dialog = await WaitDialogAsync(view, "确认未匹配的本地游戏");
-            FindAll<ComboBox>(dialog).Single().SelectedIndex = 1;
+            FindAll<GameSearchPicker>(dialog).Single().SelectedId = occupied.Games[0].Id;
             InvokePrimary(dialog);
             ContentDialog merge = await WaitDialogAsync(view, "确认调整已有对应关系");
             await CaptureAsync(merge, "matching-merge-confirmation.png");
@@ -74,12 +74,36 @@ public sealed partial class SmokeApp
 
         var closeMergePreview = Preview(view, occupied, BackupContent.GameInfo, CancellationToken.None);
         ContentDialog first = await WaitDialogAsync(view, "确认未匹配的本地游戏");
-        FindAll<ComboBox>(first).Single().SelectedIndex = 1;
+        FindAll<GameSearchPicker>(first).Single().SelectedId = occupied.Games[0].Id;
         InvokePrimary(first);
         ContentDialog second = await WaitDialogAsync(view, "确认调整已有对应关系");
         second.Hide();
         Check(!(await closeMergePreview).Continue, "关闭第二次合并确认应终止恢复");
         results.Add("PASS matching-second-close: no continuation");
+
+        var duplicatePreview = Preview(view, unmatched, BackupContent.GameInfo, CancellationToken.None);
+        ContentDialog duplicates = await WaitDialogAsync(view, "确认未匹配的本地游戏");
+        GameSearchPicker[] pickers = FindAll<GameSearchPicker>(duplicates).ToArray();
+        await EnterGameQueryAsync(pickers[0], "云端游戏甲");
+        Check(pickers[0].HasPendingQuery && pickers[0].SelectedId == null,
+            $"输入名称只能筛选，不得自动关联。pending={pickers[0].HasPendingQuery}, selected={pickers[0].SelectedId}, text={pickers[0].SearchBox.Text}");
+        InvokePrimary(duplicates);
+        await Task.Delay(100);
+        Check(!duplicatePreview.IsCompleted && FindAll<InfoBar>(duplicates).Any(info => info.IsOpen),
+            "未确认搜索候选时应拦截恢复。");
+        pickers[0].SelectedId = unmatched.Games[0].Id;
+        Check(((IEnumerable<GameSearchItem>)pickers[1].SearchBox.ItemsSource).Single(item => item.Id == unmatched.Games[0].Id).Detail.Contains("本轮已选择"),
+            "被其他本地游戏选中的云端候选应标注占用信息。");
+        pickers[1].SelectedId = unmatched.Games[0].Id;
+        InvokePrimary(duplicates);
+        await Task.Delay(100);
+        Check(!duplicatePreview.IsCompleted && FindAll<InfoBar>(duplicates).Any(info => info.IsOpen),
+            "同一云端游戏不能同时对应两个本地游戏。");
+        pickers[1].SelectedId = unmatched.Games[1].Id;
+        InvokePrimary(duplicates);
+        var confirmed = await duplicatePreview;
+        Check(confirmed.Continue && confirmed.Matching?.Targets.Count == 2, "修正重复对应后应返回两个明确ID的对应关系。");
+        results.Add("PASS matching-search-and-duplicates: typed names do not map; uncommitted query blocks; duplicate cloud choice blocks; distinct IDs confirm");
 
         Check(before == JsonSerializer.Serialize(controller.Settings, BackupJson.Options), "匹配预览与取消不得写配置");
         Check(controller.SaveCalls == savesBefore && controller.OperationCalls == operationsBefore, "匹配预览不得保存配置、下载或触发恢复");

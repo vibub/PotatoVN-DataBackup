@@ -89,6 +89,15 @@ public sealed partial class SmokeApp : Application
                 File.WriteAllLines(Path.Combine(Program.Output, "interactive-ready.txt"),
                     ["Interactive synthetic picker check is ready.", "Synthetic game root: " + controller.GetGames()[0].LocalDirectory,
                     "Synthetic save folder: " + Path.Combine(controller.GetGames()[0].LocalDirectory!, "save")]);
+                if (Environment.GetEnvironmentVariable("POTATOVN_UI_SMOKE_INTERACTIVE_PICKER") == "1")
+                {
+                    pages.SelectedIndex = 4;
+                    await Task.Delay(100);
+                    ListView pending = Field<ListView>(view, "_pendingList");
+                    pending.SelectedItem = pending.Items[0];
+                    var configure = typeof(BackupSettingsView).GetMethod("ConfigurePendingTargetAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
+                    _ = (Task)configure.Invoke(view, [CancellationToken.None])!;
+                }
                 return;
             }
             List<string> results = [];
@@ -97,6 +106,23 @@ public sealed partial class SmokeApp : Application
                 await Task.Delay(700);
                 Pivot navigation = FindAll<Pivot>(view).Single(pivot => AutomationProperties.GetName(pivot) == "设置页面");
                 Check(navigation.Items.Count == 6, "应能通过固定导航访问全部六个设置页面。");
+                if (Environment.GetEnvironmentVariable("POTATOVN_UI_SMOKE_MATCHING_ONLY") == "1")
+                {
+                    await RunMatchingSmokeAsync(view, controller, results);
+                    File.WriteAllLines(Path.Combine(Program.Output, "result.txt"), results);
+                    return;
+                }
+                if (Environment.GetEnvironmentVariable("POTATOVN_UI_SMOKE_PICKERS_ONLY") == "1")
+                {
+                    navigation.SelectedIndex = 1;
+                    await Task.Delay(200);
+                    await CheckGameSelectionAsync(view, controller, host, navigation, results);
+                    await CheckSaveSuggestionAsync(view, controller, results);
+                    await CheckPresentationAsync(view, controller, host, navigation, results);
+                    await RunMatchingSmokeAsync(view, controller, results);
+                    File.WriteAllLines(Path.Combine(Program.Output, "result.txt"), results);
+                    return;
+                }
                 await CheckFeedbackScopeAsync(view, controller, navigation, results);
                 foreach (var size in new[] { (Width: 1440, Height: 900), (Width: 1080, Height: 760), (Width: 760, Height: 620), (Width: 620, Height: 540) })
                 {
@@ -180,7 +206,9 @@ public sealed partial class SmokeApp : Application
                 await CheckSettingsCommitAsync(view, controller, results);
                 navigation.SelectedIndex = 1;
                 await Task.Delay(160);
+                await CheckGameSelectionAsync(view, controller, host, navigation, results);
                 await CheckSaveSuggestionAsync(view, controller, results);
+                await CheckPresentationAsync(view, controller, host, navigation, results);
                 await CheckFirstRunSettingsAsync(hostPanel, view, results);
                 navigation.SelectedIndex = 4;
                 await Task.Delay(120);
@@ -373,10 +401,10 @@ public sealed partial class SmokeApp : Application
     {
         GameIdentity game = controller.GetGames()[0];
         string expected = Path.Combine(game.LocalDirectory!, "save");
-        ComboBox games = Field<ComboBox>(view, "_saveGame");
-        games.SelectedItem = games.Items.OfType<ComboBoxItem>().Single(item => item.Tag is Guid id && id == game.Id);
+        ListView games = Field<ListView>(view, "_saveGame");
+        games.SelectedItem = games.Items.OfType<ListViewItem>().Single(item => ((GameIdentity)item.Tag).Id == game.Id);
         await Task.Delay(120);
-        Check((games.SelectedItem as ComboBoxItem)?.Content as string == game.Name, "存档游戏选择器应显示游戏名，安装目录应单独标注。");
+        Check(Field<TextBlock>(view, "_saveGameTitle").Text == game.Name, "存档游戏选择器应显示游戏名，安装目录应单独标注。");
         Check(!controller.Settings.SaveConfigs.Any(config => config.GameId == game.Id), "候选位置显示时不应自动添加为备份位置。");
         InvokeButton(FindButton(view, "检查并添加…"));
         ContentDialog cancelled = await WaitDialogAsync(view, "添加存档位置");
@@ -396,7 +424,7 @@ public sealed partial class SmokeApp : Application
         Check(location.BaseKind == SaveBaseKind.GameRoot && location.RelativePath.Replace('\\', '/') == "save",
             "确认候选后应保存为游戏目录下的save相对规则。");
         ListView roots = Field<ListView>(view, "_saveRoots");
-        Check(roots.Items.Count == 1 && roots.Items[0].ToString()!.Contains(expected), "已保存位置应展示完整save路径，不能只展示安装目录。");
+        Check(roots.Items.Count == 1 && ((ListViewItem)roots.Items[0]).Tag.ToString()!.Contains(expected), "已保存位置应展示完整save路径，不能只展示安装目录。");
         results.Add("PASS save-candidate: full save path and relative rule shown; candidate stays unconfigured until confirmed; cancel leaves settings unchanged");
         Check(!FindAll<Button>(view).Any(button => button.Content as string == "检查并添加…"), "已加入备份的位置不应再次作为未配置候选显示。");
         int savesBefore = controller.SaveCalls;
@@ -460,11 +488,11 @@ public sealed partial class SmokeApp : Application
         int operationsBefore = controller.OperationCalls;
         Task operation = (Task)method.Invoke(view, [CancellationToken.None])!;
         ContentDialog dialog = await WaitDialogAsync(view, "设置存档恢复位置");
-        ComboBox game = FindAll<ComboBox>(dialog).Single();
+        GameSearchPicker game = FindAll<GameSearchPicker>(dialog).Single();
         TextBox target = FindAll<TextBox>(dialog).Single(input => input.Header as string == "本机目标路径");
         Check(target.Text == entry.TargetOverride, "恢复位置对话框应显示已有自定义目标。");
         Guid anotherGame = controller.GetGames().First(candidate => candidate.Id != entry.LocalGameId).Id;
-        game.SelectedItem = game.Items.OfType<ComboBoxItem>().Single(item => item.Tag is Guid id && id == anotherGame);
+        game.SelectedId = anotherGame;
         Check(target.Text.Length == 0, "更换恢复对应游戏时必须清除旧游戏的自定义路径。");
         await CaptureAsync(dialog, "pending-target-switch.png");
         dialog.Hide();
@@ -535,6 +563,9 @@ internal sealed class DemoController : IBackupUiController
         }).ToList();
         Settings.LibraryMappings.Add(new PendingLibraryMapping { Id = "demo-library", Name = "旧设备游戏库（演示）", OriginalPath = "D:\\Games" });
     }
+    public string? CoverOverride { get; set; }
+    public string? GetGameCoverPath(Guid gameId) => gameId == _games[0].Id
+        ? CoverOverride ?? Path.Combine(AppContext.BaseDirectory, "sample-cover.jpg") : null;
     public IReadOnlyList<GameIdentity> GetGames() => _games;
     public IReadOnlyList<SavePathSuggestion> GetSavePathSuggestions(Guid gameId) => gameId == _games[0].Id
         ? [new SavePathSuggestion(Path.Combine(_games[0].LocalDirectory!, "save"), false, "隔离宿主检测候选"),

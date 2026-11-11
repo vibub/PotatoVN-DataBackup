@@ -1,10 +1,12 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using PotatoVN.Backup.Core;
 using PotatoVN.Backup.Core.Engine;
 
@@ -12,20 +14,73 @@ namespace PotatoVN.App.PluginBase.BackupUi;
 
 public sealed partial class BackupSettingsView
 {
-    private readonly ComboBox _saveGame = new() { Header = "选择游戏", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly ListView _saveGame = new() { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 360, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBox _saveGameSearch = TextInput("搜索存档游戏", "游戏名、目录或来源 ID");
+    private readonly ComboBox _saveGameFilter = new() { Header = "筛选游戏", HorizontalAlignment = HorizontalAlignment.Stretch };
+    private readonly TextBlock _saveGameCount = Note("");
+    private readonly TextBlock _saveGameEmpty = Note("");
+    private readonly TextBlock _saveGameTitle = Heading("", "BodyStrongTextBlockStyle");
+    private readonly StackPanel _saveGameDetails = Stack();
+    private readonly Grid _saveGameLayout = new() { ColumnSpacing = 20, RowSpacing = 16 };
+    private IReadOnlyList<GameIdentity> _saveGames = Array.Empty<GameIdentity>();
+    private Guid? _saveGameId;
+    private static Guid? _lastSaveGameId;
+    private bool _refreshingSaveGames;
     private readonly ListView _saveRoots = new() { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 250 };
     private readonly TextBlock _saveLocationHint = Note("");
-    private readonly TextBlock _saveInstallation = Note("");
+    private readonly Border _saveCover = new() { Width = 96, Height = 136, CornerRadius = new CornerRadius(6), VerticalAlignment = VerticalAlignment.Top };
+    private readonly StackPanel _saveGameBadges = Stack(6);
+    private readonly StackPanel _saveGameBrowser = Stack(8);
+    private Guid? _coverGameId;
     private readonly StackPanel _saveSuggestions = Stack(8);
 
     private void BuildSaveLocationControls(StackPanel panel)
     {
-        panel.Children.Add(_saveGame);
-        panel.Children.Add(_saveInstallation);
+        var toolbar = Stack(8);
+        toolbar.Children.Add(_saveGameSearch);
+        AddChoice(_saveGameFilter, "all", "全部游戏");
+        AddChoice(_saveGameFilter, "configured", "已配置存档");
+        AddChoice(_saveGameFilter, "unconfigured", "未配置存档");
+        AddChoice(_saveGameFilter, "local", "本机目录有效");
+        _saveGameFilter.SelectedIndex = 0;
+        toolbar.Children.Add(_saveGameFilter);
+        toolbar.Children.Add(_saveGameCount);
+        _saveGameBrowser.Children.Add(_saveGame);
+        _saveGameBrowser.Children.Add(_saveGameEmpty);
+        _saveGameLayout.ColumnDefinitions.Add(new ColumnDefinition());
+        _saveGameLayout.ColumnDefinitions.Add(new ColumnDefinition());
+        for (int index = 0; index < 3; index++)
+            _saveGameLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _saveGameLayout.Children.Add(toolbar);
+        Grid.SetRow(_saveGameBrowser, 1);
+        _saveGameLayout.Children.Add(_saveGameBrowser);
+        _saveGameLayout.Children.Add(_saveGameDetails);
+        void Arrange()
+        {
+            bool wide = _saveGameLayout.ActualWidth >= 780;
+            _saveGameLayout.ColumnDefinitions[0].Width = wide ? new GridLength(300) : new GridLength(1, GridUnitType.Star);
+            _saveGameLayout.ColumnDefinitions[1].Width = wide ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+            Grid.SetColumn(_saveGameDetails, wide ? 1 : 0);
+            Grid.SetRow(_saveGameDetails, wide ? 1 : 2);
+        }
+        _saveGameLayout.SizeChanged += (_, _) => Arrange();
+        Arrange();
+        panel.Children.Add(_saveGameLayout);
+        panel = _saveGameDetails;
+        var header = new Grid { ColumnSpacing = 16 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.Children.Add(_saveCover);
+        var identity = Stack(10);
+        identity.Children.Add(_saveGameTitle);
+        identity.Children.Add(_saveGameBadges);
+        Grid.SetColumn(identity, 1);
+        header.Children.Add(identity);
+        panel.Children.Add(header);
         panel.Children.Add(_saveLocationHint);
         panel.Children.Add(_saveRoots);
         panel.Children.Add(_saveSuggestions);
-        panel.Children.Add(ActionButton("重新检查存档位置", _ => { RefreshSaveLocations(); return Task.CompletedTask; }));
+        panel.Children.Add(ActionButton("重新检查存档位置", _ => { _coverGameId = null; RefreshSaveLocations(); return Task.CompletedTask; }));
         var addActions = Row();
         addActions.Children.Add(ActionButton("选择存档文件夹…", async _ => await AddPickedSaveLocationAsync(false), successMessage: "存档位置已保存。"));
         addActions.Children.Add(ActionButton("选择存档文件…", async _ => await AddPickedSaveLocationAsync(true), successMessage: "存档位置已保存。"));
@@ -34,12 +89,12 @@ public sealed partial class BackupSettingsView
         var actions = Row();
         actions.Children.Add(ActionButton("编辑所选位置…", async _ =>
         {
-            if (_saveRoots.SelectedItem is not SaveLocationChoice choice) throw new InvalidOperationException("请先选择一个存档位置。");
+            if (_saveRoots.SelectedItem is not ListViewItem { Tag: SaveLocationChoice choice }) throw new InvalidOperationException("请先选择一个存档位置。");
             await EditSaveLocationAsync(choice.Location);
         }, successMessage: "存档位置已保存。"));
         actions.Children.Add(ActionButton("移除所选位置", async _ =>
         {
-            if (Choice(_saveGame) is not Guid gameId || _saveRoots.SelectedItem is not SaveLocationChoice choice)
+            if (_saveGameId is not Guid gameId || _saveRoots.SelectedItem is not ListViewItem { Tag: SaveLocationChoice choice })
                 throw new InvalidOperationException("请先选择一个存档位置。");
             if (await DialogAsync("移除存档位置", Note("停止备份这个位置？本机存档和云端备份都不会删除。"), "移除") != ContentDialogResult.Primary)
                 return;
@@ -49,13 +104,21 @@ public sealed partial class BackupSettingsView
             RefreshSaveLocations();
         }, successMessage: "已停止备份所选位置。"));
         panel.Children.Add(actions);
-        _saveGame.SelectionChanged += (_, _) => RefreshSaveLocations();
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_saveGame, "配置存档的游戏");
+        _saveGame.SelectionChanged += (_, _) =>
+        {
+            if (_refreshingSaveGames || _saveGame.SelectedItem is not ListViewItem { Tag: GameIdentity game }) return;
+            _saveGameId = _lastSaveGameId = game.Id;
+            RefreshSaveLocations();
+        };
+        _saveGameSearch.TextChanged += (_, _) => RenderSaveGameChoices();
+        _saveGameFilter.SelectionChanged += (_, _) => RenderSaveGameChoices();
         RefreshSaveGameChoices();
     }
 
     private async Task AddPickedSaveLocationAsync(bool isFile)
     {
-        if (Choice(_saveGame) is not Guid) throw new InvalidOperationException("请先选择一个游戏。");
+        if (_saveGameId is not Guid) throw new InvalidOperationException("请先选择一个游戏。");
         string? path = await PickPathAsync(isFile);
         if (path != null) await EditSaveLocationAsync(null, path, isFile);
         else _operationDismissed = true;
@@ -63,31 +126,72 @@ public sealed partial class BackupSettingsView
 
     private void RefreshSaveGameChoices()
     {
-        object? selected = Choice(_saveGame);
-        _saveGame.Items.Clear();
-        foreach (GameIdentity game in _controller.GetGames().OrderBy(g => g.Name, StringComparer.CurrentCultureIgnoreCase))
-            AddChoice(_saveGame, game.Id, game.Name);
-        SelectChoice(_saveGame, selected);
-        if (_saveGame.SelectedItem == null && _saveGame.Items.Count > 0) _saveGame.SelectedIndex = 0;
+        _saveGames = _controller.GetGames().OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase).ToArray();
+        Guid? previous = _saveGameId ?? _lastSaveGameId;
+        _saveGameId = _saveGames.FirstOrDefault(game => game.Id == previous)?.Id ?? _saveGames.FirstOrDefault()?.Id;
+        _lastSaveGameId = _saveGameId;
         RefreshSaveLocations();
+    }
+
+    private void RenderSaveGameChoices()
+    {
+        string filter = Choice(_saveGameFilter) as string ?? "all";
+        var counts = _controller.Settings.SaveConfigs.ToDictionary(config => config.GameId, config => config.Locations.Count);
+        GameIdentity[] visible = _saveGames.Where(game => GameSearch.Matches(_saveGameSearch.Text, game) && (filter switch
+        {
+            "configured" => counts.GetValueOrDefault(game.Id) > 0,
+            "unconfigured" => counts.GetValueOrDefault(game.Id) == 0,
+            "local" => !string.IsNullOrWhiteSpace(game.LocalDirectory) && Directory.Exists(game.LocalDirectory),
+            _ => true
+        })).ToArray();
+        _refreshingSaveGames = true;
+        // 只改状态文字时复用原行，保留列表的滚动位置。
+        bool sameRows = _saveGame.Items.OfType<ListViewItem>().Select(item => ((GameIdentity)item.Tag).Id).SequenceEqual(visible.Select(game => game.Id));
+        if (!sameRows) _saveGame.Items.Clear();
+        for (int index = 0; index < visible.Length; index++)
+        {
+            GameIdentity game = visible[index];
+            int count = counts.GetValueOrDefault(game.Id);
+            string state = count == 0 ? "未配置存档" : $"已配置 {count} 处";
+            ListViewItem row = GameListItem(game, state, count == 0 ? StatusTone.Neutral : StatusTone.Success,
+                !Directory.Exists(game.LocalDirectory));
+            if (sameRows)
+            {
+                var existing = (ListViewItem)_saveGame.Items[index];
+                object content = row.Content;
+                row.Content = null;
+                existing.Content = content;
+                existing.Tag = game;
+            }
+            else _saveGame.Items.Add(row);
+        }
+        _saveGame.SelectedItem = _saveGame.Items.OfType<ListViewItem>().FirstOrDefault(item => ((GameIdentity)item.Tag).Id == _saveGameId);
+        _refreshingSaveGames = false;
+        _saveGameCount.Text = $"{visible.Length} / {_saveGames.Count} 款游戏";
+        _saveGameEmpty.Visibility = visible.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _saveGameEmpty.Text = _saveGames.Count == 0 ? "暂无游戏。" : "无匹配游戏。";
     }
 
     private void RefreshSaveLocations()
     {
         _saveRoots.Items.Clear();
         _saveSuggestions.Children.Clear();
-        _saveInstallation.Text = "";
-        if (Choice(_saveGame) is not Guid gameId)
+        RenderSaveGameChoices();
+        _saveGameDetails.Visibility = _saveGameId == null ? Visibility.Collapsed : Visibility.Visible;
+        if (_saveGameId is not Guid gameId)
         {
             _saveLocationHint.Text = "暂无游戏。请先在 PotatoVN 中添加游戏，再配置存档位置。";
             return;
         }
         GameIdentity? game = _controller.GetGames().FirstOrDefault(g => g.Id == gameId);
         GameSaveConfig? config = _controller.Settings.SaveConfigs.FirstOrDefault(c => c.GameId == gameId);
-        _saveInstallation.Text = string.IsNullOrWhiteSpace(game?.LocalDirectory)
-            ? "游戏尚未关联本机目录"
-            : $"游戏安装目录：{game.LocalDirectory}";
+        _saveGameTitle.Text = game?.Name ?? "游戏已不在当前游戏库中";
         int count = config?.Locations.Count ?? 0;
+        _saveGameBadges.Children.Clear();
+        _saveGameBadges.Children.Add(StatusBadge(count == 0 ? "未配置存档" : $"已配置 {count} 处",
+            count == 0 ? StatusTone.Neutral : StatusTone.Success));
+        if (!Directory.Exists(game?.LocalDirectory)) _saveGameBadges.Children.Add(StatusBadge("未关联", StatusTone.Warning));
+        RefreshGameCover(gameId);
         var configuredPaths = (config?.Locations ?? new List<SaveLocation>())
             .Select(location => SaveLocationPath(location, game)).Where(path => !string.IsNullOrWhiteSpace(path))
             .Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path!))).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -96,25 +200,51 @@ public sealed partial class BackupSettingsView
             .Where(candidate => !configuredPaths.Contains(Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate.Path))))
             .DistinctBy(candidate => Path.TrimEndingDirectorySeparator(Path.GetFullPath(candidate.Path)), StringComparer.OrdinalIgnoreCase).ToArray();
         _saveLocationHint.Text = count == 0
-            ? available.Length > 0 ? $"发现 {available.Length} 个候选位置，确认后可加入备份。" : "暂无存档位置。可手动添加，或在游戏中保存进度后重新检查。"
-            : $"已加入备份：{count} 个存档位置";
+            ? available.Length > 0 ? $"{available.Length} 个候选位置待确认" : "添加存档文件夹或文件。"
+            : "";
+        _saveLocationHint.Visibility = string.IsNullOrEmpty(_saveLocationHint.Text) ? Visibility.Collapsed : Visibility.Visible;
         if (config != null)
             foreach (SaveLocation location in config.Locations)
             {
                 string path = SaveLocationPath(location, game) ?? $"{SaveBaseLabel(location.BaseKind)}\\{location.RelativePath}";
-                string state = File.Exists(path) || Directory.Exists(path) ? "" : " · 当前路径不存在";
-                _saveRoots.Items.Add(new SaveLocationChoice(location, $"{(location.IsFile ? "文件" : "文件夹")}\n{path}{state}"));
+                var row = Stack(6);
+                var labels = Row();
+                labels.Children.Add(StatusBadge(location.IsFile ? "文件" : "文件夹"));
+                if (!File.Exists(path) && !Directory.Exists(path)) labels.Children.Add(StatusBadge("路径不存在", StatusTone.Warning));
+                row.Children.Add(labels);
+                row.Children.Add(PathText(path));
+                _saveRoots.Items.Add(new ListViewItem { Tag = new SaveLocationChoice(location, path), Content = row,
+                    HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(8, 8, 8, 10), Margin = new Thickness(0, 0, 0, 6) });
             }
         foreach (SavePathSuggestion candidate in available)
         {
             var suggestion = Stack(4);
-            suggestion.Children.Add(Heading($"候选位置：{candidate.Source}", "BodyStrongTextBlockStyle"));
-            suggestion.Children.Add(Note($"{(candidate.IsFile ? "文件" : "文件夹")}：{candidate.Path}"));
+            suggestion.Children.Add(StatusBadge(candidate.IsFile ? "候选文件" : "候选文件夹", StatusTone.Info));
+            suggestion.Children.Add(PathText(candidate.Path));
             var add = new Button { Content = "检查并添加…" };
             add.Click += async (_, _) => await RunAsync(async _ => await EditSaveLocationAsync(null, candidate.Path, candidate.IsFile), successMessage: "存档位置已加入备份。");
             suggestion.Children.Add(add);
             _saveSuggestions.Children.Add(suggestion);
         }
+    }
+
+    private void RefreshGameCover(Guid gameId)
+    {
+        if (_coverGameId == gameId) return;
+        _coverGameId = gameId;
+        UIElement EmptyCover() => (UIElement)Microsoft.UI.Xaml.Markup.XamlReader.Load(
+            "<Border xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" " +
+            "Background=\"{ThemeResource ControlFillColorSecondaryBrush}\">" +
+            "<TextBlock Text=\"暂无封面\" FontSize=\"12\" Opacity=\"0.8\" " +
+            "HorizontalAlignment=\"Center\" VerticalAlignment=\"Center\"/></Border>");
+        _saveCover.Child = EmptyCover();
+        string? path = _controller.GetGameCoverPath(gameId);
+        if (string.IsNullOrWhiteSpace(path) || !Uri.TryCreate(path, UriKind.Absolute, out Uri? uri) ||
+            !uri.IsFile || !File.Exists(uri.LocalPath)) return;
+        var image = new Image { Stretch = Stretch.UniformToFill, Source = new BitmapImage(uri) { DecodePixelWidth = 192 } };
+        image.ImageFailed += (_, _) => { if (ReferenceEquals(_saveCover.Child, image)) _saveCover.Child = EmptyCover(); };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(image, "游戏封面");
+        _saveCover.Child = image;
     }
 
     private string? SaveLocationPath(SaveLocation location, GameIdentity? game)
@@ -135,7 +265,7 @@ public sealed partial class BackupSettingsView
 
     private async Task EditSaveLocationAsync(SaveLocation? existing, string? pickedPath = null, bool pickedFile = false)
     {
-        if (Choice(_saveGame) is not Guid gameId) throw new InvalidOperationException("请先选择一个游戏。");
+        if (_saveGameId is not Guid gameId) throw new InvalidOperationException("请先选择一个游戏。");
         GameIdentity game = _controller.GetGames().First(g => g.Id == gameId);
         var path = TextInput("存档路径", "粘贴完整路径，或点击下方浏览按钮");
         path.Text = pickedPath ?? (existing == null ? "" : SaveLocationPath(existing, game)) ?? "";

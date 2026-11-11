@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
@@ -10,6 +10,7 @@ public interface IBackupUiController
 {
     BackupSettings Settings { get; }
     IReadOnlyList<GameIdentity> GetGames();
+    string? GetGameCoverPath(Guid gameId) => null;
     IReadOnlyList<SavePathSuggestion> GetSavePathSuggestions(Guid gameId) => Array.Empty<SavePathSuggestion>();
     IReadOnlyList<PendingRestore> GetPending();
     long PendingBytes { get; }

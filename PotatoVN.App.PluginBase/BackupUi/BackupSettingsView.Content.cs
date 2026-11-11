@@ -19,9 +19,15 @@ public sealed partial class BackupSettingsView
         (BackupContent.Home, "主页布局"), (BackupContent.Settings, "常规设置"), (BackupContent.Saves, "游戏存档")
     ];
     private readonly Dictionary<BackupContent, CheckBox> _contentChecks = new();
-    private readonly CheckBox _allGames = new() { Content = "备份全部游戏（包含非本地游戏）" };
+    private readonly CheckBox _allGames = new() { Content = "备份全部游戏（含非本地）" };
     private readonly ListView _gameSelection = new() { SelectionMode = ListViewSelectionMode.Multiple, IsMultiSelectCheckBoxEnabled = true, MaxHeight = 260 };
     private readonly HashSet<Guid> _selectedGameIds = new();
+    private readonly TextBox _gameSearch = TextInput("搜索备份游戏", "游戏名、目录或来源 ID");
+    private readonly CheckBox _onlySelectedGames = new() { Content = "只看已选" };
+    private readonly StackPanel _manualGameScope = Stack(8);
+    private readonly TextBlock _gameSelectionEmpty = Note("");
+    private bool _refreshingGameSelection;
+    private IReadOnlyList<GameIdentity> _scopeGames = Array.Empty<GameIdentity>();
     private readonly TextBlock _gameScopeNote = Note("");
     private readonly ToggleSwitch _timer = new() { Header = "定时备份", OnContent = "已开启", OffContent = "已关闭" };
     private readonly ToggleSwitch _onExit = new() { Header = "游戏退出后备份", OnContent = "已开启", OffContent = "已关闭" };
@@ -58,23 +64,45 @@ public sealed partial class BackupSettingsView
         _allGames.IsChecked = _controller.Settings.AllGames;
         panel.Children.Add(_allGames);
         _selectedGameIds.UnionWith(_controller.Settings.SelectedGameIds);
-        RefreshGameSelection();
+        RefreshGameSelection(true);
         UpdateGameScope();
         _allGames.Checked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
         _allGames.Unchecked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
-        _gameSelection.SelectionChanged += (_, _) =>
+        _gameSelection.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+        _gameSelection.SelectionChanged += (_, args) =>
         {
-            if (_loading) return;
-            _selectedGameIds.Clear();
-            _selectedGameIds.UnionWith(_gameSelection.SelectedItems.OfType<GameChoice>().Select(g => g.Game.Id));
-            UpdateGameScope();
+            if (_refreshingGameSelection) return;
+            bool changed = false;
+            foreach (ListViewItem item in args.RemovedItems)
+                if (_gameSelection.Items.Contains(item)) changed |= _selectedGameIds.Remove(((GameIdentity)item.Tag).Id);
+            foreach (ListViewItem item in args.AddedItems)
+                if (_gameSelection.Items.Contains(item)) changed |= _selectedGameIds.Add(((GameIdentity)item.Tag).Id);
+            if (!changed) return;
+            if (_onlySelectedGames.IsChecked == true) RefreshGameSelection();
+            else UpdateGameScope();
             MarkSettingsDirty();
         };
+        _gameSearch.TextChanged += (_, _) => RefreshGameSelection();
+        _onlySelectedGames.Checked += (_, _) => RefreshGameSelection();
+        _onlySelectedGames.Unchecked += (_, _) => RefreshGameSelection();
+        _manualGameScope.Children.Add(_gameSearch);
+        _manualGameScope.Children.Add(_onlySelectedGames);
+        _manualGameScope.Children.Add(_gameSelection);
+        _manualGameScope.Children.Add(_gameSelectionEmpty);
+        var gameActions = Row();
+        var selectFiltered = new Button { Content = "选中筛选结果" };
+        selectFiltered.Click += (_, _) => SelectFilteredGames(true);
+        var clearFiltered = new Button { Content = "取消筛选结果选择" };
+        clearFiltered.Click += (_, _) => SelectFilteredGames(false);
+        gameActions.Children.Add(selectFiltered);
+        gameActions.Children.Add(clearFiltered);
+        _manualGameScope.Children.Add(gameActions);
         panel.Children.Add(_gameScopeNote);
-        panel.Children.Add(_gameSelection);
+        panel.Children.Add(_manualGameScope);
+        UpdateGameScope();
         panel.Children.Add(ActionButton("刷新游戏列表", _ =>
         {
-            RefreshGameSelection();
+            RefreshGameSelection(true);
             RefreshSaveGameChoices();
             return Task.CompletedTask;
         }));
@@ -84,27 +112,64 @@ public sealed partial class BackupSettingsView
         return panel;
     }
 
-    private void RefreshGameSelection()
+    private void RefreshGameSelection(bool reload = false)
     {
-        _loading = true;
-        _selectedGameIds.IntersectWith(_controller.GetGames().Select(game => game.Id));
+        if (reload) _scopeGames = _controller.GetGames().ToArray();
+        IReadOnlyList<GameIdentity> games = _scopeGames;
+        _selectedGameIds.IntersectWith(games.Select(game => game.Id));
+        _refreshingGameSelection = true;
         _gameSelection.Items.Clear();
-        foreach (GameIdentity game in _controller.GetGames().OrderBy(g => g.Name, StringComparer.CurrentCultureIgnoreCase))
+        foreach (GameIdentity game in FilteredScopeGames())
         {
-            var choice = new GameChoice(game);
-            _gameSelection.Items.Add(choice);
-            if (_selectedGameIds.Contains(game.Id)) _gameSelection.SelectedItems.Add(choice);
+            ListViewItem item = GameListItem(game, System.IO.Directory.Exists(game.LocalDirectory) ? "已关联" : "未关联", System.IO.Directory.Exists(game.LocalDirectory) ? StatusTone.Info : StatusTone.Neutral);
+            _gameSelection.Items.Add(item);
+            if (_selectedGameIds.Contains(game.Id)) _gameSelection.SelectedItems.Add(item);
         }
-        _loading = false;
+        _refreshingGameSelection = false;
+        _gameSelectionEmpty.Visibility = _gameSelection.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _gameSelectionEmpty.Text = games.Count == 0 ? "暂无游戏。" : "无匹配游戏。";
         UpdateGameScope();
+    }
+
+    private IEnumerable<GameIdentity> FilteredScopeGames() =>
+        _scopeGames.Where(game => GameSearch.Matches(_gameSearch.Text, game) &&
+            (_onlySelectedGames.IsChecked != true || _selectedGameIds.Contains(game.Id)))
+            .OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase);
+
+    private void SelectFilteredGames(bool select)
+    {
+        // 批量操作直接使用当前输入，避免延迟的 TextChanged 通知使其作用于旧列表。
+        Guid[] ids = FilteredScopeGames().Select(game => game.Id).ToArray();
+        int previous = _selectedGameIds.Count;
+        if (select) _selectedGameIds.UnionWith(ids);
+        else _selectedGameIds.ExceptWith(ids);
+        RefreshGameSelection();
+        if (previous != _selectedGameIds.Count) MarkSettingsDirty();
     }
 
     private void UpdateGameScope()
     {
         bool all = _allGames.IsChecked == true;
-        _gameSelection.Visibility = all ? Visibility.Collapsed : Visibility.Visible;
+        _manualGameScope.Visibility = all ? Visibility.Collapsed : Visibility.Visible;
         _gameSelection.IsEnabled = !all;
-        _gameScopeNote.Text = all ? "包含之后添加的游戏" : $"已选 {_selectedGameIds.Count} 款游戏";
+        _gameScopeNote.Text = all ? "包含以后新增的游戏" :
+            $"已选 {_selectedGameIds.Count} 款游戏，当前显示 {_gameSelection.Items.Count} 款";
+    }
+
+    private static ListViewItem GameListItem(GameIdentity game, string state, StatusTone tone = StatusTone.Neutral, bool showUnlinked = false)
+    {
+        var content = Stack(8);
+        var name = Heading(game.Name, "BodyStrongTextBlockStyle");
+        name.MaxLines = 2;
+        name.TextTrimming = TextTrimming.CharacterEllipsis;
+        ToolTipService.SetToolTip(name, game.Name);
+        content.Children.Add(name);
+        var badges = Row();
+        badges.Children.Add(StatusBadge(state, tone));
+        if (showUnlinked) badges.Children.Add(StatusBadge("未关联", StatusTone.Warning));
+        content.Children.Add(badges);
+        return new ListViewItem { Tag = game, Content = content, HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(10, 10, 10, 12), Margin = new Thickness(0, 0, 0, 6) };
     }
 
     private StackPanel BuildAutomationTab()
@@ -192,8 +257,4 @@ public sealed partial class BackupSettingsView
         HorizontalAlignment = HorizontalAlignment.Stretch
     };
 
-    private sealed record GameChoice(GameIdentity Game)
-    {
-        public override string ToString() => GameLabel(Game);
-    }
 }
