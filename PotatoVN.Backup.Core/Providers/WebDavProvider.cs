@@ -84,6 +84,7 @@ public sealed class WebDavProvider : IBackupProvider
             result.Add(new RemoteItem(relative, isDirectory, length,
                 ProviderHttp.Date(properties.Element(Dav + "getlastmodified")?.Value)));
         }
+        RememberDirectory(directory);
         return result;
     }
 
@@ -92,6 +93,7 @@ public sealed class WebDavProvider : IBackupProvider
         using var response = await PropFindAsync(RemotePaths.Normalize(path), "0", cancellationToken).ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound) return false;
         ProviderHttp.Check(response, "WebDAV");
+        RememberDirectory(RemotePaths.Parent(RemotePaths.Normalize(path)));
         return true;
     }
 
@@ -115,6 +117,7 @@ public sealed class WebDavProvider : IBackupProvider
     {
         using var response = await SendAsync(HttpMethod.Get, UriFor(path), null, cancellationToken).ConfigureAwait(false);
         ProviderHttp.Check(response, "WebDAV");
+        RememberDirectory(RemotePaths.Parent(RemotePaths.Normalize(path)));
         await ProviderHttp.DownloadAsync(response, localFile, cancellationToken).ConfigureAwait(false);
     }
 
@@ -142,6 +145,13 @@ public sealed class WebDavProvider : IBackupProvider
     {
         string path = RemotePaths.Normalize(_root + "/" + relative);
         _knownDirectories.RemoveWhere(directory => directory == path || directory.StartsWith(path + "/", StringComparison.Ordinal));
+    }
+
+    private void RememberDirectory(string relative)
+    {
+        string path = "";
+        foreach (string part in RemotePaths.Normalize(_root + "/" + relative).Split('/'))
+        { path = RemotePaths.Join(path, part); _knownDirectories.Add(path); }
     }
 
     private async Task EnsureDirectoryAsync(string relative, CancellationToken token)

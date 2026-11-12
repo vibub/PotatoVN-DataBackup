@@ -279,6 +279,7 @@ public sealed partial class BackupCoordinator
 
     private static void ValidateVersionedSnapshot(SnapshotManifest value, string path)
     {
+        if (value.FormatVersion == 3) { PackedFormat.ValidateSnapshot(value, value.DeviceId); if (value.ManifestPath != path) throw new InvalidDataException("v3快照路径不一致。"); return; }
         if (value.FormatVersion == 1)
         {
             ValidateSnapshot(value, path);
@@ -304,6 +305,7 @@ public sealed partial class BackupCoordinator
 
     private static void ValidateVersionedSave(SaveManifest value, string path)
     {
+        if (value.FormatVersion == 3) { PackedFormat.ValidateSave(value, value.DeviceId); if (value.ManifestPath != path) throw new InvalidDataException("v3存档路径不一致。"); return; }
         if (value.FormatVersion == 1)
         {
             ValidateSave(value, path);
@@ -356,6 +358,16 @@ public sealed partial class BackupCoordinator
         {
             Report("正在下载并校验备份…");
             var archives = new IncrementalArchiveStore(provider, work);
+            PackedCatalog? packedCatalog = snapshot.FormatVersion == 3 ? await PackedCatalog.LoadAsync(provider, snapshot.DeviceId, work, ct) : null;
+            PackedArchiveStore? packed = packedCatalog == null ? null : new PackedArchiveStore(provider, packedCatalog, work);
+            if (packedCatalog != null)
+            {
+                SnapshotManifest authoritative = packedCatalog.State.Snapshots.SingleOrDefault(item => item.ManifestPath == snapshot.ManifestPath)
+                    ?? throw new InvalidOperationException("该备份版本已过期，请刷新云端历史。");
+                if (JsonSerializer.Serialize(authoritative, PackedFormat.Json) != JsonSerializer.Serialize(snapshot, PackedFormat.Json))
+                    throw new InvalidDataException("所选版本与云端已提交索引不一致，请刷新历史。");
+                snapshot = authoritative;
+            }
             string? data = null, media = null;
             if ((content & ~BackupContent.Saves) != BackupContent.None)
             {
@@ -372,11 +384,13 @@ public sealed partial class BackupCoordinator
                 }
                 else
                 {
-                    await archives.RestoreAsync(snapshot.DataRecipe!, data, ct);
+                    if (packed != null) await packed.RestoreAsync(snapshot.DataRecipe!, data, ct);
+                    else await archives.RestoreAsync(snapshot.DataRecipe!, data, ct);
                     if (snapshot.MediaRecipe != null)
                     {
                         media = Path.Combine(work, "media.zip");
-                        await archives.RestoreAsync(snapshot.MediaRecipe, media, ct);
+                        if (packed != null) await packed.RestoreAsync(snapshot.MediaRecipe, media, ct);
+                        else await archives.RestoreAsync(snapshot.MediaRecipe, media, ct);
                     }
                 }
             }
@@ -385,7 +399,8 @@ public sealed partial class BackupCoordinator
             {
                 foreach (string manifestPath in snapshot.SaveManifestPaths)
                 {
-                    SaveManifest save = await ReadVersionedJsonAsync<SaveManifest>(provider, manifestPath, work, ct);
+                    SaveManifest save = packedCatalog == null ? await ReadVersionedJsonAsync<SaveManifest>(provider, manifestPath, work, ct)
+                        : packedCatalog.State.Saves.Single(item => item.ManifestPath == manifestPath);
                     ValidateVersionedSave(save, manifestPath);
                     if (matching != null && !matching.Targets.ContainsKey(save.Game.Id))
                         throw new InvalidDataException("存档清单中的游戏不属于当前快照，请检查备份完整性。");
@@ -399,7 +414,8 @@ public sealed partial class BackupCoordinator
                     else
                     {
                         archive = Path.Combine(work, Guid.NewGuid().ToString("N") + ".zip");
-                        await archives.RestoreAsync(save.Recipe!, archive, ct);
+                        if (packed != null) await packed.RestoreAsync(save.Recipe!, archive, ct);
+                        else await archives.RestoreAsync(save.Recipe!, archive, ct);
                         save = await IncrementalSaveAdapter.ToLocalAsync(save, archive, ct);
                     }
                     downloadedSaves.Add((save, archive));

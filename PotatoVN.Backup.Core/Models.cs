@@ -177,6 +177,8 @@ public sealed class PendingRestore
 public sealed class HostExport
 {
     public string ArchivePath { get; set; } = "";
+    public string? NativeDirectory { get; set; }
+    public Dictionary<string, string> MediaPaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> Settings { get; set; } = [];
 }
 
@@ -188,6 +190,7 @@ public interface IBackupHost
         if (GetGames().Any(g => g.IsRunning)) throw new InvalidOperationException("请先退出运行中的游戏，再恢复软件资料。");
     }
     Task<HostExport> ExportAsync(string workDirectory, CancellationToken cancellationToken);
+    Task<HostExport> ExportForBackupAsync(string workDirectory, CancellationToken cancellationToken) => ExportAsync(workDirectory, cancellationToken);
     Task StageImportAsync(string mergedArchivePath, Dictionary<string, JsonNode?> settings,
         CancellationToken cancellationToken);
 }

@@ -467,7 +467,7 @@ internal static class RestoreMatchingChecks
         var original = Context([source.Game], remote);
         original.Settings.Content = BackupContent.GameInfo | BackupContent.Saves;
         original.Settings.SaveConfigs = [new() { GameId = source.Game.Id, Locations = source.Manifest.Locations }];
-        var snapshot = await original.Coordinator.BackupAsync();
+        var snapshot = await original.Coordinator.BackupIncrementalAsync();
         var old = Game(name: "原本已安装条目", directory: Work(), source: "v-save");
         var target = Context([old], remote);
         target.Settings.GameMappings.Add(Map(source.Game.Id, old.Id));
@@ -490,7 +490,7 @@ internal static class RestoreMatchingChecks
         var source = await SaveFixtureAsync(); var remote = new MemoryProvider();
         var original = Context([source.Game], remote); original.Settings.Content = BackupContent.GameInfo | BackupContent.Saves;
         original.Settings.SaveConfigs = [new() { GameId = source.Game.Id, Locations = source.Manifest.Locations }];
-        var snapshot = await original.Coordinator.BackupAsync();
+        var snapshot = await original.Coordinator.BackupIncrementalAsync();
         var saveManifest = JsonSerializer.Deserialize<SaveManifest>(remote.Files[snapshot.SaveManifestPaths.Single()], BackupJson.Options)!;
         string saveObject = IncrementalArchiveStore.ObjectPaths(saveManifest.Recipe!).First();
         remote.Files[saveObject] = [0x01, 0x02];
@@ -511,7 +511,7 @@ internal static class RestoreMatchingChecks
         var source = await SaveFixtureAsync(); var remote = new MemoryProvider();
         var original = Context([source.Game], remote); original.Settings.Content = BackupContent.GameInfo | BackupContent.Saves;
         original.Settings.SaveConfigs = [new() { GameId = source.Game.Id, Locations = source.Manifest.Locations }];
-        var snapshot = await original.Coordinator.BackupAsync();
+        var snapshot = await original.Coordinator.BackupIncrementalAsync();
         var local = Game(directory: Work(), source: null); var target = Context([local], remote);
         target.Settings.GameMappings = [Map(Guid.NewGuid(), local.Id)]; await target.Store.SaveAsync(target.Settings);
         var before = JsonSerializer.Serialize(target.Settings, BackupJson.Options);
@@ -595,7 +595,7 @@ internal static class RestoreMatchingChecks
         var source = await SaveFixtureAsync(); var remote = new MemoryProvider();
         var original = Context([source.Game], remote); original.Settings.Content = BackupContent.Saves;
         original.Settings.SaveConfigs = [new() { GameId = source.Game.Id, Locations = source.Manifest.Locations }];
-        var snapshot = await original.Coordinator.BackupAsync();
+        var snapshot = await original.Coordinator.BackupIncrementalAsync();
         var removed = Game(source.Game.Id, "先前恢复的非本地资料", source: null);
         var kept = Game(name: "原有已安装条目", directory: Work(), source: null);
         var sentinel = Path.Combine(kept.LocalDirectory!, "game.exe"); await File.WriteAllTextAsync(sentinel, "local-executable");
@@ -624,7 +624,7 @@ internal static class RestoreMatchingChecks
         var source = await SaveFixtureAsync(); var remote = new MemoryProvider();
         var original = Context([source.Game], remote); original.Settings.Content = BackupContent.GameInfo | BackupContent.Saves;
         original.Settings.SaveConfigs = [new() { GameId = source.Game.Id, Locations = source.Manifest.Locations }];
-        var snapshot = await original.Coordinator.BackupAsync();
+        var snapshot = await original.Coordinator.BackupIncrementalAsync();
         var fresh = Context([], remote);
         var decisions = RestoreMatchingPreview.Decide(RestoreMatchingPreview.Analyze(snapshot.Games, [], []), new Dictionary<Guid, Guid?>());
         await fresh.Coordinator.StageRestoreAsync(snapshot, snapshot.Content, default, decisions);
@@ -698,7 +698,7 @@ internal static class RestoreMatchingChecks
     {
         var cloud = Game(source: "v-cloud"); var remote = new MemoryProvider(); var original = Context([cloud], remote);
         original.Settings.Content = BackupContent.GameInfo;
-        var snapshot = await original.Coordinator.BackupAsync();
+        var snapshot = await original.Coordinator.BackupIncrementalAsync();
         var local = Game(directory: Work(), source: null); var unrelatedRunning = Game(source: "v-unrelated");
         unrelatedRunning.IsRunning = true;
         var target = Context([local, unrelatedRunning], remote);

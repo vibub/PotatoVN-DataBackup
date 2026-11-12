@@ -24,7 +24,7 @@ using PotatoVN.Backup.Core.Engine;
 namespace PotatoVN.App.PluginBase.Backup;
 
 /// <summary>宿主内部接口只在这里解析，不修改宿主或公开库。</summary>
-public sealed class PotatoHostAdapter : IBackupHost
+public sealed partial class PotatoHostAdapter : IBackupHost
 {
     private readonly IPotatoVnApi _api;
     private readonly DispatcherQueue _dispatcher;

@@ -353,10 +353,10 @@ internal static partial class EngineTests
     private static async Task PublishLastAsync()
     {
         var good = Coordinator(BackupContent.Reviews, Game());
-        var snapshot = await good.Coordinator.BackupAsync();
+        var snapshot = await good.Coordinator.BackupIncrementalAsync();
         Check(good.Provider.Uploads.Last() == snapshot.ManifestPath + ".complete", "快照清单未最后发布");
         var bad = Coordinator(BackupContent.Reviews, Game()); bad.Provider.FailUpload = p => p.StartsWith("v2/objects/", StringComparison.Ordinal) && p.EndsWith(".gz", StringComparison.Ordinal);
-        await Throws<IOException>(() => bad.Coordinator.BackupAsync());
+        await Throws<IOException>(() => bad.Coordinator.BackupIncrementalAsync());
         Check(!bad.Provider.Files.Keys.Any(k => (k.StartsWith("v1/snapshots/") || k.StartsWith("v2/snapshots/")) && k.EndsWith("manifest.json")), "失败仍发布可恢复版本");
         Check((await good.Coordinator.ListSnapshotsAsync()).Count == 1 && snapshot.Games.Single().LocalDirectory is null, "非本地条目备份被遗漏");
     }
@@ -365,23 +365,23 @@ internal static partial class EngineTests
         var fixture = await SaveFixtureAsync(); var setup = Coordinator(BackupContent.Saves, fixture.Game);
         setup.Settings.SaveConfigs = [new() { GameId = fixture.Game.Id, Locations = [fixture.Location] }];
         setup.Settings.KeepSaves = 1;
-        var first = await setup.Coordinator.BackupAsync(); var second = await setup.Coordinator.BackupAsync();
+        var first = await setup.Coordinator.BackupIncrementalAsync(); var second = await setup.Coordinator.BackupIncrementalAsync();
         Check(first.SaveManifestPaths.Single() == second.SaveManifestPaths.Single(), "未变化存档重复上传");
         await File.WriteAllTextAsync(Path.Combine(fixture.Game.LocalDirectory!, "savedata", "slot.dat"), "changed-progress");
-        var third = await setup.Coordinator.BackupAsync();
+        var third = await setup.Coordinator.BackupIncrementalAsync();
         Check(third.SaveManifestPaths.Single() != first.SaveManifestPaths.Single() && setup.Provider.Files.ContainsKey(first.SaveManifestPaths.Single()), "仍被快照引用的旧存档被删除");
         Directory.Delete(Path.Combine(fixture.Game.LocalDirectory!, "savedata"), true);
-        var fourth = await setup.Coordinator.BackupAsync();
+        var fourth = await setup.Coordinator.BackupIncrementalAsync();
         Check(fourth.SaveManifestPaths.Single() == third.SaveManifestPaths.Single() && fourth.Notices.Count > 0, "缺失文件未保留旧版本");
         Directory.CreateDirectory(Path.Combine(fixture.Game.LocalDirectory!, "savedata"));
-        var fifth = await setup.Coordinator.BackupAsync();
+        var fifth = await setup.Coordinator.BackupIncrementalAsync();
         Check(fifth.SaveManifestPaths.Single() == third.SaveManifestPaths.Single(), "空目录替代旧版本");
         await setup.Coordinator.StageRestoreAsync(fifth, BackupContent.Saves);
         Check(setup.Coordinator.Pending.Items.Count == 1 && setup.Coordinator.Pending.GetStats().Bytes > 0, "存档未暂存");
     }
     private static async Task DownloadValidationAsync()
     {
-        var setup = Coordinator(BackupContent.GameInfo, Game()); var snapshot = await setup.Coordinator.BackupAsync();
+        var setup = Coordinator(BackupContent.GameInfo, Game()); var snapshot = await setup.Coordinator.BackupIncrementalAsync();
         string dataPath = snapshot.Data?.Path ?? IncrementalObjectPath(snapshot.DataRecipe!, snapshot.DataRecipe!.Files[0]);
         setup.Provider.Files[dataPath] = Encoding.UTF8.GetBytes("corrupted");
         await Throws<InvalidDataException>(() => setup.Coordinator.StageRestoreAsync(snapshot, BackupContent.GameInfo));
@@ -400,7 +400,7 @@ internal static partial class EngineTests
         deviceB.Settings.SelectedGameIds = [fixture.Game.Id];
         deviceB.Settings.GameMappings = [new() { BackupGameId = originalId, LocalGameId = fixture.Game.Id }];
         deviceB.Settings.SaveConfigs = [new() { GameId = fixture.Game.Id, Locations = [fixture.Location] }];
-        var snapshot = await deviceB.Coordinator.BackupAsync();
+        var snapshot = await deviceB.Coordinator.BackupIncrementalAsync();
         Check(snapshot.Games.Single().Id == originalId, "软件快照没有使用统一备份身份");
         var savedManifest = JsonSerializer.Deserialize<SaveManifest>(deviceB.Provider.Files[snapshot.SaveManifestPaths.Single()], BackupJson.Options)!;
         Check(savedManifest.Game.Id == originalId && savedManifest.Game.SourceIds.Count == 0, "测试未覆盖无来源ID存档");

@@ -59,14 +59,14 @@ internal static partial class EngineTests
         var setup = Coordinator(BackupContent.Reviews | BackupContent.Covers, fixture.Game);
         setup.Settings.AutomaticContent = BackupContent.Saves;
         setup.Settings.SaveConfigs = [new() { GameId = fixture.Game.Id, Locations = [fixture.Location] }];
-        SnapshotManifest automatic = await setup.Coordinator.BackupAsync(automatic: true);
+        SnapshotManifest automatic = await setup.Coordinator.BackupIncrementalAsync(automatic: true);
         Check(automatic.Content == BackupContent.Saves && automatic.DataRecipe == null && automatic.MediaRecipe == null &&
             automatic.SaveManifestPaths.Count == 1, "自动存档备份携带了手动资料或图片。");
-        SnapshotManifest manual = await setup.Coordinator.BackupAsync();
+        SnapshotManifest manual = await setup.Coordinator.BackupIncrementalAsync();
         Check(manual.Content == setup.Settings.Content && manual.DataRecipe != null && manual.MediaRecipe != null &&
             manual.SaveManifestPaths.Count == 0 && setup.Settings.AutomaticContent == BackupContent.Saves, "手动备份使用或改写了自动内容。");
         setup.Settings.AutomaticContent = BackupContent.PlayTime;
-        SnapshotManifest playTime = await setup.Coordinator.BackupAsync(automatic: true);
+        SnapshotManifest playTime = await setup.Coordinator.BackupIncrementalAsync(automatic: true);
         Check(playTime.Content == BackupContent.PlayTime && playTime.MediaRecipe == null && playTime.SaveManifestPaths.Count == 0,
             "自动资料备份未过滤图片或存档。");
         string archive = Path.Combine(Work(), "automatic.zip");
@@ -75,7 +75,7 @@ internal static partial class EngineTests
         Check(fields.ContainsKey("PlayCount") && !fields.ContainsKey("Comment") && !fields.ContainsKey("ImagePath"), "自动备份包字段沿用了手动选择。");
         setup.Settings.IncludeLocalGames = false;
         setup.Settings.AutomaticContent = BackupContent.Saves;
-        SnapshotManifest excluded = await setup.Coordinator.BackupAsync(automatic: true);
+        SnapshotManifest excluded = await setup.Coordinator.BackupIncrementalAsync(automatic: true);
         Check(excluded.Games.Count == 0 && excluded.SaveManifestPaths.Count == 0, "存档备份忽略了游戏类型范围。");
     }
 }

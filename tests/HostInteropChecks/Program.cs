@@ -58,7 +58,19 @@ try
         Console.WriteLine("PASS cross-context import copies plugin records without modifying host database");
     }
     finally { context.Unload(); }
-    Console.WriteLine("PASS 4 host interop checks; synthetic data only");
+    var jsonContext = new JsonContext(typeof(Newtonsoft.Json.JsonConvert).Assembly.Location);
+    try
+    {
+        Assembly models = jsonContext.LoadFromAssemblyPath(typeof(SyntheticJsonRecord).Assembly.Location);
+        object model = Activator.CreateInstance(models.GetType(nameof(SyntheticJsonRecord), true)!)!;
+        Assembly json = jsonContext.LoadFromAssemblyName(typeof(Newtonsoft.Json.JsonConvert).Assembly.GetName());
+        var writer = new HostJsonWriter(json);
+        var result = writer.Serialize(model)!;
+        Check(result["Name"]!.GetValue<string>() == "合成资料" && result["Hidden"] == null && result["Self"] == null, "跨上下文JsonIgnore失效或发生循环引用");
+        Console.WriteLine("PASS host Newtonsoft honors cross-context model JsonIgnore and avoids self reference");
+    }
+    finally { jsonContext.Unload(); }
+    Console.WriteLine("PASS 5 host interop checks; synthetic data only");
     return 0;
 }
 finally
@@ -69,4 +81,20 @@ finally
 static void Check(bool condition, string message)
 {
     if (!condition) throw new InvalidOperationException(message);
+}
+
+public sealed class SyntheticJsonRecord
+{
+    public string Name => "合成资料";
+    [Newtonsoft.Json.JsonIgnore] public string Hidden => "synthetic private field";
+    [Newtonsoft.Json.JsonIgnore] public SyntheticJsonRecord Self => this;
+}
+sealed class JsonContext(string jsonPath) : AssemblyLoadContext(isCollectible: true)
+{
+    protected override Assembly? Load(AssemblyName name)
+    {
+        if (name.Name != "Newtonsoft.Json") return null;
+        using Stream bytes = File.OpenRead(jsonPath);
+        return LoadFromStream(bytes);
+    }
 }

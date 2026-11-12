@@ -46,7 +46,7 @@ public sealed partial class BackupCoordinator
         return path;
     }
 
-    public Task<SnapshotManifest> BackupAsync(CancellationToken ct = default, bool automatic = false) => BackupIncrementalAsync(ct, automatic);
+    public Task<SnapshotManifest> BackupAsync(CancellationToken ct = default, bool automatic = false) => BackupPackedAsync(ct, automatic);
 
     private async Task<SnapshotManifest> BackupLegacyAsync(CancellationToken ct = default)
     {
@@ -177,7 +177,7 @@ public sealed partial class BackupCoordinator
     private static SaveLocation CloneLocation(SaveLocation value) => new()
     { Id = value.Id, BaseKind = value.BaseKind, RelativePath = value.RelativePath, IsFile = value.IsFile, CustomPath = value.CustomPath };
 
-    public Task<IReadOnlyList<SnapshotManifest>> ListSnapshotsAsync(CancellationToken ct = default) => ListIncrementalSnapshotsAsync(ct);
+    public Task<IReadOnlyList<SnapshotManifest>> ListSnapshotsAsync(CancellationToken ct = default) => ListPackedSnapshotsAsync(ct);
 
     private async Task<IReadOnlyList<SnapshotManifest>> ListLegacySnapshotsAsync(CancellationToken ct = default)
     {

@@ -62,36 +62,8 @@ public static class SaveArchiveService
     public static async Task<SaveManifest?> CreateAsync(GameIdentity game, IReadOnlyList<SaveLocation> locations,
         string archivePath, Guid deviceId, CancellationToken ct = default)
     {
-        if (game.IsRunning) throw new InvalidOperationException("游戏仍在运行，存档备份已延后：" + game.Name);
-        if (locations.Count == 0) return null;
-        var roots = new List<(SaveLocation Location, string Path)>();
-        foreach (var location in locations)
-        {
-            if (location.Id.Length == 0 || location.Id.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-'))
-                throw new InvalidDataException("存档位置标识无效。");
-            // 备份时允许读取非本地游戏遗留的系统目录；恢复时 Resolve 仍要求关联。
-            string? path;
-            if (location.BaseKind == SaveBaseKind.Custom) path = location.CustomPath;
-            else if (location.BaseKind == SaveBaseKind.GameRoot)
-                path = game.LocalDirectory is { } root && Directory.Exists(root)
-                    ? BackupFiles.Within(root, location.RelativePath) : null;
-            else
-            {
-                var basePath = UserRoots().First(p => p.Kind == location.BaseKind).Root;
-                path = string.IsNullOrEmpty(basePath) ? null : BackupFiles.Within(basePath, location.RelativePath);
-            }
-            if (path is null || (location.IsFile ? !File.Exists(path) : !Directory.Exists(path))) return null;
-            roots.Add((location, path));
-        }
-        var files = new List<(string Source, string Entry)>();
-        foreach (var (location, path) in roots)
-        {
-            if (location.IsFile) files.Add((path, $"roots/{location.Id}/{Path.GetFileName(path)}"));
-            else foreach (var file in EnumerateFiles(path))
-                files.Add((file, $"roots/{location.Id}/{Path.GetRelativePath(path, file).Replace('\\', '/')}"));
-        }
-        // 空目录或任何一个位置缺失，不创建空版本替代已有云端存档。
-        if (files.Count == 0 || files.Sum(f => new FileInfo(f.Source).Length) == 0 || roots.Any(r => !files.Any(f => f.Entry.StartsWith($"roots/{r.Location.Id}/", StringComparison.Ordinal)))) return null;
+        var files = ResolveSources(game, locations);
+        if (files == null) return null;
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(archivePath))!);
         var records = new List<FileRecord>();
         using (var zip = ZipFile.Open(archivePath, ZipArchiveMode.Create))
@@ -127,6 +99,59 @@ public static class SaveArchiveService
             Sha256 = await BackupFiles.HashAsync(archivePath, ct), Length = new FileInfo(archivePath).Length,
             ContentHash = BackupFiles.TreeHash(records), Locations = locations.ToList(), Files = records
         };
+    }
+
+    private static List<(string Source, string Entry)>? ResolveSources(GameIdentity game, IReadOnlyList<SaveLocation> locations)
+    {
+        if (game.IsRunning) throw new InvalidOperationException("游戏仍在运行，存档备份已延后：" + game.Name);
+        if (locations.Count == 0) return null;
+        var roots = new List<(SaveLocation Location, string Path)>();
+        foreach (var location in locations)
+        {
+            if (location.Id.Length == 0 || location.Id.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '-'))
+                throw new InvalidDataException("存档位置标识无效。");
+            // 备份时允许读取非本地游戏遗留的系统目录；恢复时 Resolve 仍要求关联。
+            string? path;
+            if (location.BaseKind == SaveBaseKind.Custom) path = location.CustomPath;
+            else if (location.BaseKind == SaveBaseKind.GameRoot)
+                path = game.LocalDirectory is { } root && Directory.Exists(root)
+                    ? BackupFiles.Within(root, location.RelativePath) : null;
+            else
+            {
+                var basePath = UserRoots().First(p => p.Kind == location.BaseKind).Root;
+                path = string.IsNullOrEmpty(basePath) ? null : BackupFiles.Within(basePath, location.RelativePath);
+            }
+            if (path is null || (location.IsFile ? !File.Exists(path) : !Directory.Exists(path))) return null;
+            roots.Add((location, path));
+        }
+        var files = new List<(string Source, string Entry)>();
+        foreach (var (location, path) in roots)
+        {
+            if (location.IsFile) files.Add((path, $"roots/{location.Id}/{Path.GetFileName(path)}"));
+            else foreach (var file in EnumerateFiles(path))
+                files.Add((file, $"roots/{location.Id}/{Path.GetRelativePath(path, file).Replace('\\', '/')}"));
+        }
+        // 空目录或任何一个位置缺失，不创建空版本替代已有云端存档。
+        if (files.Count == 0 || files.Sum(f => new FileInfo(f.Source).Length) == 0 || roots.Any(r => !files.Any(f => f.Entry.StartsWith($"roots/{r.Location.Id}/", StringComparison.Ordinal)))) return null;
+        return files;
+    }
+
+    public static async Task<PreparedSave?> PrepareAsync(GameIdentity game, IReadOnlyList<SaveLocation> locations,
+        Guid deviceId, CancellationToken ct = default)
+    {
+        var sources = ResolveSources(game, locations);
+        if (sources == null) return null;
+        var files = new List<PreparedFile>();
+        foreach (var source in sources.OrderBy(source => source.Entry, StringComparer.Ordinal))
+            files.Add(await PreparedFile.ReadAsync(source.Entry, source.Source, ct));
+        var records = files.Select(file => file.Record).ToList();
+        var manifest = new SaveManifest
+        {
+            DeviceId = deviceId, Game = game, CapturedUtc = DateTimeOffset.UtcNow,
+            ContentHash = BackupFiles.TreeHash(records), Length = records.Sum(file => file.Length),
+            Locations = locations.ToList(), Files = records
+        };
+        return new PreparedSave(manifest, files);
     }
 
     public static async Task<bool> RestoreAsync(PendingRestore pending, string archivePath, GameIdentity game,

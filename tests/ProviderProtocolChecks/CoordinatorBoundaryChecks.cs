@@ -10,10 +10,10 @@ internal static class CoordinatorBoundaryChecks
     public static async Task ManifestLastAndDedup(string root)
     {
         var context = Create(root);
-        var first = await context.Coordinator.BackupAsync();
+        var first = await context.Coordinator.BackupIncrementalAsync();
         var save = first.SaveManifestPaths.Single();
         Check(context.Remote.Uploads.Last() == first.ManifestPath + ".complete", "软件快照清单必须最后上传。");
-        var second = await context.Coordinator.BackupAsync();
+        var second = await context.Coordinator.BackupIncrementalAsync();
         Check(second.SaveManifestPaths.Single() == save, "未变化存档应复用已有版本。");
         Check(context.Remote.Uploads.Count(p => p.StartsWith("v2/objects/", StringComparison.Ordinal) && p.EndsWith(".gz", StringComparison.Ordinal)) == 1,
             "相同存档文件不应重复上传对象。");
@@ -23,7 +23,7 @@ internal static class CoordinatorBoundaryChecks
     {
         var context = Create(root);
         context.Remote.FailUpload = p => p.StartsWith("v2/objects/", StringComparison.Ordinal) && p.EndsWith(".gz", StringComparison.Ordinal);
-        await Throws<IOException>(() => context.Coordinator.BackupAsync());
+        await Throws<IOException>(() => context.Coordinator.BackupIncrementalAsync());
         Check(!context.Remote.Files.Keys.Any(p => (p.StartsWith("v1/snapshots/") || p.StartsWith("v2/snapshots/")) && p.EndsWith("/manifest.json")),
             "存档上传失败不能发布软件快照清单。");
         Check(!context.Remote.Files.Keys.Any(p => (p.StartsWith("v1/saves/") || p.StartsWith("v2/saves/")) && p.EndsWith("/manifest.json")),
@@ -33,12 +33,12 @@ internal static class CoordinatorBoundaryChecks
     public static async Task NewDeviceRetainsOldSaveReference(string root)
     {
         var original = Create(root);
-        var snapshot = await original.Coordinator.BackupAsync();
+        var snapshot = await original.Coordinator.BackupIncrementalAsync();
         var fresh = Create(root, original.Remote, original.Game.Id, false);
         await fresh.Coordinator.StageRestoreAsync(snapshot, BackupContent.Saves);
         Check(fresh.Coordinator.Pending.Items.Count == 1 && fresh.Coordinator.Pending.Items[0].Status == RestoreStatus.PendingLink,
             "新设备未关联游戏时必须暂存旧设备存档。");
-        var next = await fresh.Coordinator.BackupAsync();
+        var next = await fresh.Coordinator.BackupIncrementalAsync();
         Check(next.SaveManifestPaths.Count == 1 && next.SaveManifestPaths[0] == snapshot.SaveManifestPaths[0],
             "新设备没有本机存档时，后续快照应保留旧设备已有云端版本引用。");
         var manifest = original.Remote.Read<SaveManifest>(next.SaveManifestPaths.Single());
@@ -48,12 +48,12 @@ internal static class CoordinatorBoundaryChecks
     public static async Task LocationChangeCreatesNewRecipe(string root)
     {
         var context = Create(root);
-        var first = await context.Coordinator.BackupAsync();
+        var first = await context.Coordinator.BackupIncrementalAsync();
         var secondDirectory = Path.Combine(context.Game.LocalDirectory!, "saveB");
         Directory.CreateDirectory(secondDirectory);
         File.Copy(Path.Combine(context.Game.LocalDirectory!, "saveA", "slot.dat"), Path.Combine(secondDirectory, "slot.dat"));
         context.Settings.SaveConfigs[0].Locations[0].RelativePath = "saveB";
-        var second = await context.Coordinator.BackupAsync();
+        var second = await context.Coordinator.BackupIncrementalAsync();
         Check(second.SaveManifestPaths.Single() != first.SaveManifestPaths.Single(),
             "即使文件内容相同，路径规则变化也必须产生新的存档清单。");
         Check(context.Remote.Read<SaveManifest>(second.SaveManifestPaths.Single()).Locations[0].RelativePath == "saveB",
@@ -63,11 +63,11 @@ internal static class CoordinatorBoundaryChecks
     public static async Task MissingArchiveIsNotReused(string root)
     {
         var context = Create(root);
-        var first = await context.Coordinator.BackupAsync();
+        var first = await context.Coordinator.BackupIncrementalAsync();
         var previous = context.Remote.Read<SaveManifest>(first.SaveManifestPaths.Single());
         string missing = ObjectPath(previous.Recipe!, previous.Recipe!.Files.Single());
         context.Remote.Files.Remove(missing);
-        var second = await context.Coordinator.BackupAsync();
+        var second = await context.Coordinator.BackupIncrementalAsync();
         var current = context.Remote.Read<SaveManifest>(second.SaveManifestPaths.Single());
         Check(context.Remote.Files.TryGetValue(ObjectPath(current.Recipe!, current.Recipe!.Files.Single()), out var archive),
             "不能发布仍引用缺失存档对象的成功快照。");
@@ -82,7 +82,7 @@ internal static class CoordinatorBoundaryChecks
         var context = Create(root);
         context.Settings.KeepSnapshots = 1;
         context.Settings.KeepSaves = 1;
-        var first = await context.Coordinator.BackupAsync();
+        var first = await context.Coordinator.BackupIncrementalAsync();
         var oldSave = context.Remote.Read<SaveManifest>(first.SaveManifestPaths.Single());
         var otherDevice = Guid.NewGuid();
         var foreign = new SnapshotManifest
@@ -95,7 +95,7 @@ internal static class CoordinatorBoundaryChecks
         byte[] foreignBytes = context.Remote.Files[foreign.ManifestPath];
         context.Remote.Put(foreign.ManifestPath + ".complete", new { FormatVersion = 2, Path = foreign.ManifestPath, Length = foreignBytes.LongLength, Sha256 = Convert.ToHexString(SHA256.HashData(foreignBytes)) });
         await File.WriteAllTextAsync(Path.Combine(context.Game.LocalDirectory!, "saveA", "slot.dat"), "new-progress");
-        await context.Coordinator.BackupAsync();
+        await context.Coordinator.BackupIncrementalAsync();
         Check(!context.Remote.Files.ContainsKey(first.ManifestPath), "当前设备过期软件历史应被清理。");
         Check(context.Remote.Files.ContainsKey(foreign.ManifestPath), "其他设备的软件快照不能被当前设备清理。");
         Check(context.Remote.Files.ContainsKey(oldSave.ManifestPath) && oldSave.Recipe!.Files.All(file => context.Remote.Files.ContainsKey(ObjectPath(oldSave.Recipe, file))),
