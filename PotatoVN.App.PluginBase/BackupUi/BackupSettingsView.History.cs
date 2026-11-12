@@ -14,11 +14,17 @@ public sealed partial class BackupSettingsView
 {
     private readonly ListView _snapshotList = new() { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 280 };
     private readonly TextBlock _snapshotDetails = Note("读取云端备份后选择版本。");
-    private readonly GameSearchPicker _mapBackupGame = new("备份中的游戏");
-    private readonly GameSearchPicker _mapLocalGame = new("本机对应的游戏");
+    private readonly GameSearchPicker _mapBackupGame = new("云端游戏");
+    private readonly CheckBox _cloudOnlySaves = new() { Content = "含存档" };
+    private readonly CheckBox _cloudOnlyUnmatched = new() { Content = "未匹配" };
+    private readonly TextBlock _mappingPreview = Note("");
+    private readonly TextBlock _snapshotNotices = Note("");
+    private readonly Expander _snapshotNoticeExpander = new() { Header = "备份提示", HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+    private readonly GameSearchPicker _mapLocalGame = new("本机游戏");
     private readonly StackPanel _libraryRows = Stack(16);
     private readonly Dictionary<string, string> _libraryTargetDrafts = new();
     private Guid? _historyProfileId;
+    private Dictionary<Guid, Guid> _historyTargets = new();
 
     private StackPanel BuildHistoryTab()
     {
@@ -34,18 +40,41 @@ public sealed partial class BackupSettingsView
             foreach (SnapshotManifest snapshot in snapshots.OrderByDescending(s => s.CreatedUtc))
                 _snapshotList.Items.Add(new SnapshotChoice(snapshot));
             if (_snapshotList.Items.Count > 0) _snapshotList.SelectedIndex = 0;
-            else _snapshotDetails.Text = "此云盘暂无备份。";
+            else
+            {
+                _snapshotDetails.Text = "此云盘暂无备份。";
+                _snapshotNoticeExpander.Visibility = Visibility.Collapsed;
+                RefreshGameMappingChoices();
+            }
         }));
         panel.Children.Add(_snapshotList);
         panel.Children.Add(_snapshotDetails);
+        _snapshotNoticeExpander.Content = new ScrollViewer { Content = _snapshotNotices, MaxHeight = 160 };
+        _snapshotNoticeExpander.Visibility = Visibility.Collapsed;
+        panel.Children.Add(_snapshotNoticeExpander);
         Button restore = ActionButton("选择内容并恢复…", RestoreSelectedSnapshotAsync, successMessage: "所选内容已处理。");
         restore.Visibility = Visibility.Collapsed;
         panel.Children.Add(restore);
 
         var mapping = Stack();
-        mapping.Children.Add(Note("识别有误时，可在此修改对应游戏，保存后再恢复。"));
-        mapping.Children.Add(_mapBackupGame);
-        mapping.Children.Add(_mapLocalGame);
+        mapping.Children.Add(Note("先选左侧云端游戏，再选右侧本机游戏，保存对应关系。"));
+        _mapBackupGame.Filters.Children.Add(_cloudOnlySaves);
+        _mapBackupGame.Filters.Children.Add(_cloudOnlyUnmatched);
+        _mapBackupGame.Filters.MinHeight = _mapLocalGame.Filters.MinHeight = 36;
+        _mapBackupGame.Results.MaxHeight = _mapLocalGame.Results.MaxHeight = 320;
+        mapping.Children.Add(GameColumns(_mapBackupGame, _mapLocalGame));
+        mapping.Children.Add(_mappingPreview);
+        _mapBackupGame.Filter = item =>
+        {
+            if (item.Id is not Guid id || _snapshotList.SelectedItem is not SnapshotChoice selected) return false;
+            return (_cloudOnlySaves.IsChecked != true || selected.Snapshot.SaveGames.ContainsKey(id)) &&
+                (_cloudOnlyUnmatched.IsChecked != true || !_historyTargets.ContainsKey(id));
+        };
+        foreach (CheckBox check in new[] { _cloudOnlySaves, _cloudOnlyUnmatched })
+        {
+            check.Checked += (_, _) => _mapBackupGame.Refresh();
+            check.Unchecked += (_, _) => _mapBackupGame.Refresh();
+        }
         var mappingActions = Row();
         mappingActions.Children.Add(ActionButton("保存对应关系", async ct =>
         {
@@ -55,6 +84,7 @@ public sealed partial class BackupSettingsView
             if (_mapBackupGame.SelectedId is not Guid backupId || _mapLocalGame.SelectedId is not Guid localId)
                 throw new InvalidOperationException("请分别选择备份游戏和本机游戏。");
             await _controller.ConfigureGameMappingAsync(backupId, localId, ct);
+            RefreshGameMappingChoices();
         }, successMessage: "游戏对应关系已保存。"));
         mappingActions.Children.Add(ActionButton("改为自动识别", async _ =>
         {
@@ -67,7 +97,8 @@ public sealed partial class BackupSettingsView
         }, successMessage: "已改为自动识别。"));
         mappingActions.Children.Add(ActionButton("刷新本机游戏", _ => { RefreshGameMappingChoices(); return Task.CompletedTask; }));
         mapping.Children.Add(mappingActions);
-        panel.Children.Add(new Expander { Header = "高级：手动指定游戏对应关系", Content = mapping, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+        panel.Children.Add(Heading("游戏与存档"));
+        panel.Children.Add(mapping);
         _snapshotList.SelectionChanged += (_, _) =>
         {
             restore.Visibility = _snapshotList.SelectedItem is SnapshotChoice ? Visibility.Visible : Visibility.Collapsed;
@@ -75,13 +106,20 @@ public sealed partial class BackupSettingsView
             {
                 SnapshotManifest snapshot = row.Snapshot;
                 string types = string.Join("、", ContentChoices.Where(choice => snapshot.Content.HasFlag(choice.Flag)).Select(choice => choice.Label));
-                _snapshotDetails.Text = $"包含：{types}\n{snapshot.Games.Count} 个游戏 · {snapshot.SaveManifestPaths.Count} 份游戏存档";
-                if (snapshot.Notices.Count > 0) _snapshotDetails.Text += "\n" + string.Join("\n", snapshot.Notices);
+                _snapshotDetails.Text = $"包含：{types}\n{snapshot.Games.Count} 款游戏 · {snapshot.SaveGames.Count} 款含存档 · {snapshot.SaveManifestPaths.Count} 份存档";
+                _snapshotNotices.Text = string.Join("\n", snapshot.Notices);
+                _snapshotNoticeExpander.Visibility = snapshot.Notices.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+                _snapshotNoticeExpander.IsExpanded = false;
             }
-            else _snapshotDetails.Text = "请选择备份版本。";
+            else
+            {
+                _snapshotDetails.Text = "请选择备份版本。";
+                _snapshotNoticeExpander.Visibility = Visibility.Collapsed;
+            }
             RefreshGameMappingChoices();
         };
         _mapBackupGame.SelectionChanged += (_, _) => SelectSavedGameMapping();
+        _mapLocalGame.SelectionChanged += (_, _) => UpdateMappingPreview();
         return panel;
     }
 
@@ -119,21 +157,48 @@ public sealed partial class BackupSettingsView
         return (_snapshotList.SelectedItem as SnapshotChoice)?.Snapshot ?? throw new InvalidOperationException("请先读取云端备份，再选择一个版本。");
     }
 
+    private Dictionary<Guid, Guid> MappingTargets(SnapshotManifest snapshot) =>
+        PotatoVN.Backup.Core.Engine.RestoreMatchingPreview.Analyze(snapshot.Games, _controller.GetGames(), _controller.Settings.GameMappings)
+            .AutomaticTargets.ToDictionary(pair => pair.Key, pair => pair.Value);
+
     private void RefreshGameMappingChoices()
     {
         Guid? previous = _mapBackupGame.SelectedId;
-        var cloud = _snapshotList.SelectedItem is SnapshotChoice row ? row.Snapshot.Games : new List<GameIdentity>();
-        _mapBackupGame.SetItems(cloud.OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase).Select(GameSearchItem.FromCloudGame),
-            cloud.Any(game => game.Id == previous) ? previous : cloud.FirstOrDefault()?.Id);
-        _mapLocalGame.SetItems(_controller.GetGames().OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase).Select(GameSearchItem.FromGame), null);
+        SnapshotManifest? snapshot = (_snapshotList.SelectedItem as SnapshotChoice)?.Snapshot;
+        var cloud = snapshot?.Games ?? new List<GameIdentity>();
+        Dictionary<Guid, Guid> targets = _historyTargets = snapshot == null ? new() : MappingTargets(snapshot);
+        _mapBackupGame.SetItems(cloud.OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase).Select(game =>
+        {
+            bool saved = snapshot!.SaveGames.TryGetValue(game.Id, out DateTimeOffset captured);
+            string status = !snapshot.Content.HasFlag(BackupContent.Saves) ? "未包含存档" : saved ? "含存档" : "无存档";
+            string detail = saved ? $"存档时间：{captured.ToLocalTime():yyyy-MM-dd HH:mm}" : status;
+            return GameSearchItem.FromCloudGame(game) with { Badge = status, MatchBadge = targets.ContainsKey(game.Id) ? "已匹配" : "未匹配",
+                Tone = saved ? StatusTone.Success : StatusTone.Neutral, Detail = detail };
+        }), cloud.Any(game => game.Id == previous) ? previous : cloud.FirstOrDefault()?.Id);
+        _mapLocalGame.SetItems(_controller.GetGames().OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase).Select(game =>
+        {
+            var item = GameSearchItem.FromGame(game);
+            GameIdentity? owner = cloud.FirstOrDefault(candidate => targets.GetValueOrDefault(candidate.Id) == game.Id);
+            return owner == null ? item : item with { MatchBadge = "已匹配", Detail = "当前对应：" + owner.Name };
+        }), null);
         SelectSavedGameMapping();
     }
 
     private void SelectSavedGameMapping()
     {
-        if (_mapBackupGame.SelectedId is not Guid backupId) return;
-        GameMatchMapping? mapping = _controller.Settings.GameMappings.FirstOrDefault(m => m.BackupGameId == backupId);
-        _mapLocalGame.SelectedId = mapping?.LocalGameId;
+        if (_mapBackupGame.SelectedId is not Guid backupId || _snapshotList.SelectedItem is not SnapshotChoice row) return;
+        Dictionary<Guid, Guid> targets = MappingTargets(row.Snapshot);
+        _mapLocalGame.SelectedId = targets.TryGetValue(backupId, out Guid local) ? local : null;
+        UpdateMappingPreview();
+    }
+
+    private void UpdateMappingPreview()
+    {
+        if (_mapBackupGame.SelectedId is not Guid backupId || _snapshotList.SelectedItem is not SnapshotChoice row)
+        { _mappingPreview.Text = "读取备份后选择云端游戏。"; return; }
+        string cloud = row.Snapshot.Games.First(game => game.Id == backupId).Name;
+        string? local = _controller.GetGames().FirstOrDefault(game => game.Id == _mapLocalGame.SelectedId)?.Name;
+        _mappingPreview.Text = local == null ? $"{cloud} → 尚未选择本机游戏" : $"{cloud} → {local}";
     }
 
     private StackPanel BuildLibraryTab()
@@ -160,7 +225,9 @@ public sealed partial class BackupSettingsView
         {
             var group = Stack(8);
             group.Children.Add(Heading(mapping.Name, "BodyStrongTextBlockStyle"));
-            group.Children.Add(Note($"旧设备位置：{mapping.OriginalPath}"));
+            group.Children.Add(StatusBadge(System.IO.Directory.Exists(mapping.TargetPath) ? "已关联" : "待关联",
+                System.IO.Directory.Exists(mapping.TargetPath) ? StatusTone.Success : StatusTone.Warning));
+            group.Children.Add(PathLine("旧设备位置", mapping.OriginalPath));
             var target = TextInput("这台电脑上的对应文件夹", "点击浏览选择，或粘贴文件夹路径");
             target.Text = _libraryTargetDrafts.GetValueOrDefault(mapping.Id) ?? mapping.TargetPath ?? "";
             target.TextChanged += (_, _) => _libraryTargetDrafts[mapping.Id] = target.Text;

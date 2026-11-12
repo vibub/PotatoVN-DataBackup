@@ -10,6 +10,7 @@ string root = Path.Combine(Path.GetTempPath(), "PotatoVNPackedChecks", Guid.NewG
 Directory.CreateDirectory(root);
 var checks = new (string Name, Func<Task> Run)[]
 {
+    ("变化摘要包含删除且不列未变化类型", Summary),
     ("v3首次合包及完整重建", Initial),
     ("跨实例无变化只读索引及目录", Unchanged),
     ("只合包变化文件并保留历史", Delta),
@@ -42,6 +43,22 @@ finally
     if (!Path.GetFullPath(root).StartsWith(allowed, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("合成清理越界");
     Directory.Delete(root, true);
 }
+async Task Summary()
+{
+    var game = new GameIdentity { Id = Guid.NewGuid(), Name = "摘要测试" };
+    var old = new SnapshotManifest { DataRecipe = new ArchiveRecipe { Files = [new FileRecord { Path = "old", Sha256 = "a" }, new FileRecord { Path = "edit", Sha256 = "b" }] }, SaveManifestPaths = ["save-old"] };
+    var next = new SnapshotManifest { DataRecipe = new ArchiveRecipe { Files = [new FileRecord { Path = "new", Sha256 = "c" }, new FileRecord { Path = "edit", Sha256 = "d" }] }, SaveManifestPaths = ["save-new"] };
+    string summary = BackupChangeSummary.Describe(old, next, [new SaveManifest { ManifestPath = "save-old", Game = game }, new SaveManifest { ManifestPath = "save-new", Game = game }]);
+    Check(summary.Contains("新增 1、修改 1、移除 1") && summary.Contains("存档更新 1") && !summary.Contains("图片") && !summary.Contains("存档移出"), "摘要漏报删除或把存档更新误判为移出");
+    var fixture = Fixture.Create(root);
+    fixture.Settings.Content = BackupContent.Saves;
+    fixture.Settings.SaveConfigs.Clear();
+    string result = "";
+    fixture.Coordinator.Progress += text => result = text;
+    var snapshot = await fixture.Coordinator.BackupAsync();
+    Check(snapshot.SaveManifestPaths.Count == 0 && result.Contains("1 款未找到文件") && !result.Contains("合成游戏"), "无存档应汇总数量，不能逐项打印游戏名");
+}
+
 async Task Initial()
 {
     var fixture = Fixture.Create(root);
@@ -63,7 +80,11 @@ async Task Unchanged()
     var fixture = Fixture.Create(root);
     SnapshotManifest initial = await fixture.Coordinator.BackupAsync();
     fixture.Remote.Reset();
-    SnapshotManifest second = await fixture.NewCoordinator().BackupAsync();
+    var coordinator = fixture.NewCoordinator();
+    string summary = "";
+    coordinator.Progress += text => summary = text;
+    SnapshotManifest second = await coordinator.BackupAsync();
+    Check(summary.StartsWith("内容未变化") && !summary.Contains("本次更改") && !summary.Contains("图片摘要"), "无变化结果不应逐项刷屏");
     Check(second.ManifestPath == initial.ManifestPath && fixture.Remote.Uploads.Count == 0 && fixture.Remote.Operations <= 6, "无变化仍产生版本、上传或逐文件检查");
     Console.WriteLine($"REQUEST unchanged: {fixture.Remote.Operations}; upload 0");
 }
@@ -74,7 +95,14 @@ async Task Delta()
     await File.WriteAllTextAsync(fixture.SavePath, "new progress");
     fixture.Host.PlayCount++;
     fixture.Remote.Reset();
-    SnapshotManifest next = await fixture.NewCoordinator().BackupAsync();
+    var coordinator = fixture.NewCoordinator();
+    string summary = "";
+    coordinator.Progress += text => summary = text;
+    SnapshotManifest next = await coordinator.BackupAsync();
+    Check(summary.Contains("本次更改：资料") && summary.Contains("存档更新 1 款游戏") && !summary.Contains("图片") && !summary.Contains("移出"), "变化摘要应只列真实变化，存档更新不能算移出");
+    Check(summary.Split('\n').Length <= 5 && summary.Contains("上传："), "完成结果应分段且简短");
+    var listed = await coordinator.ListPackedSnapshotsAsync(includeLegacy: false);
+    Check(listed.All(snapshot => snapshot.SaveGames.Count == 1 && snapshot.SaveGames.ContainsKey(fixture.Host.GetGames()[0].Id)), "历史存档标签必须来自该快照的实际引用");
     Check(next.ManifestPath != first.ManifestPath && fixture.Remote.Uploads.Count(path => path.EndsWith(".zip")) == 1, "单份存档及资料没有合成一个变化包");
     PackedCatalog catalog = await fixture.Catalog();
     Check(catalog.State.Snapshots.Count == 2 && catalog.State.Saves.Count == 2, "历史丢失");

@@ -9,9 +9,9 @@ namespace PotatoVN.App.PluginBase.BackupUi;
 
 public sealed partial class BackupSettingsView
 {
-    private enum StatusTone { Neutral, Info, Success, Warning, Error }
+    internal enum StatusTone { Neutral, Info, Success, Warning, Error }
 
-    private static Border StatusBadge(string text, StatusTone tone = StatusTone.Neutral)
+    internal static Border StatusBadge(string text, StatusTone tone = StatusTone.Neutral)
     {
         var label = new TextBlock { Text = text, FontSize = 12 };
         var badge = new Border { Child = label, CornerRadius = new CornerRadius(4),
@@ -41,6 +41,28 @@ public sealed partial class BackupSettingsView
         ApplyTheme();
         AutomationProperties.SetName(badge, text);
         return badge;
+    }
+
+    private static Grid GameColumns(FrameworkElement cloud, FrameworkElement local)
+    {
+        var grid = new Grid { ColumnSpacing = 20, RowSpacing = 16 };
+        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        grid.ColumnDefinitions.Add(new ColumnDefinition());
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        grid.Children.Add(cloud);
+        grid.Children.Add(local);
+        void Arrange()
+        {
+            bool wide = grid.ActualWidth >= 640;
+            grid.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
+            grid.ColumnDefinitions[1].Width = wide ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+            Grid.SetColumn(local, wide ? 1 : 0);
+            Grid.SetRow(local, wide ? 0 : 1);
+        }
+        grid.SizeChanged += (_, _) => Arrange();
+        Arrange();
+        return grid;
     }
 
     private static TextBlock SecondaryText(string text) =>

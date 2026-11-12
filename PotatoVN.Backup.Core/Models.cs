@@ -156,6 +156,9 @@ public sealed class SnapshotManifest
     public List<GameIdentity> Games { get; set; } = [];
     public List<string> SaveManifestPaths { get; set; } = [];
     public List<string> Notices { get; set; } = [];
+    // 读取历史时由实际存档引用填充，仅供界面显示，不改变旧备份格式。
+    [JsonIgnore]
+    public Dictionary<Guid, DateTimeOffset> SaveGames { get; set; } = [];
 }
 
 public sealed class PendingRestore

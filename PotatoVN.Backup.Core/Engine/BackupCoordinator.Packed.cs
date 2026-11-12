@@ -43,7 +43,7 @@ public sealed partial class BackupCoordinator
             }
             List<PackedCatalog>? foreign = null;
             List<SaveManifest>? legacy = null;
-            int processed = 0;
+            int processed = 0, missingSaves = 0, carriedSaves = 0;
             if (content.HasFlag(BackupContent.Saves)) foreach (GameIdentity game in selected)
             {
                 ct.ThrowIfCancellationRequested();
@@ -93,14 +93,17 @@ public sealed partial class BackupCoordinator
                     if (latest != null)
                     {
                         snapshot.SaveManifestPaths.Add(latest.ManifestPath);
-                        snapshot.Notices.Add($"{game.Name}：沿用 {latest.CapturedUtc:yyyy-MM-dd HH:mm} 的完整存档。");
+                        carriedSaves++;
                     }
-                    else snapshot.Notices.Add($"{game.Name}：尚无可备份的存档位置或文件。");
+                    else missingSaves++;
                 }
             }
+            if (missingSaves > 0) snapshot.Notices.Add($"{missingSaves} 款游戏未找到可备份的存档。");
+            if (carriedSaves > 0) snapshot.Notices.Add($"{carriedSaves} 款游戏沿用已有云端存档。");
             SnapshotManifest? previous = state.Snapshots.OrderByDescending(item => item.CreatedUtc).FirstOrDefault();
             bool unchanged = previous != null && PackedSnapshotSignature(previous) == PackedSnapshotSignature(snapshot);
             if (!unchanged) state.Snapshots.Add(snapshot);
+            string changes = BackupChangeSummary.Describe(previous, snapshot, state.Saves);
             bool retainedChanged = ApplyPackedRetention(state);
             store.UploadProgress += (current, total) => ReportBackup(55 + 30 * current / Math.Max(1, total),
                 $"正在上传变化内容：{current}/{total} 个文件，{store.UploadedObjects} 个包，{store.UploadedBytes:N0} 字节。");
@@ -126,9 +129,20 @@ public sealed partial class BackupCoordinator
             await _settingsStore.SaveAsync(Settings);
             string result = unchanged ? "内容未变化，已复用现有版本。" : "备份完成。";
             if (unchanged && store.UploadedObjects > 0) result = "已修复缺失的云端内容，保留原版本。";
-            ReportBackup(100, result + $"上传 {store.UploadedObjects} 个包、{store.UploadedFiles} 个变化文件，{store.UploadedBytes:N0} 字节。" +
-                (images == null ? "" : $"图片摘要复用 {images.ReusedHashes}，重新计算 {images.ComputedHashes}。") + string.Join("；", notices));
-            return unchanged ? previous! : snapshot;
+            var lines = new List<string> { result };
+            if (!unchanged && changes.Length > 0) lines.Add("本次更改：" + changes);
+            if (store.UploadedObjects > 0) lines.Add($"上传：{store.UploadedObjects} 个包 · {store.UploadedFiles} 个文件 · {BackupChangeSummary.Size(store.UploadedBytes)}");
+            if (content.HasFlag(BackupContent.Saves))
+                lines.Add($"存档：{snapshot.SaveManifestPaths.Count} 款游戏" + (missingSaves > 0 ? $" · {missingSaves} 款未找到文件" : "") +
+                    (carriedSaves > 0 ? $" · {carriedSaves} 款沿用云端版本" : ""));
+            // 常规缺失/沿用状态已汇总，保留真正需要处理的索引、清理与缓存提示。
+            if (catalog.Notice != null) lines.Add("提示：" + catalog.Notice);
+            lines.AddRange(notices.Skip(snapshot.Notices.Count).Select(notice => "提示：" + notice));
+            ReportBackup(100, string.Join("\n", lines));
+            SnapshotManifest completed = unchanged ? previous! : snapshot;
+            var referenced = completed.SaveManifestPaths.ToHashSet(StringComparer.Ordinal);
+            FillSnapshotSaveGames(completed, state.Saves.Where(save => referenced.Contains(save.ManifestPath)));
+            return completed;
         }
         finally { RemoveWork(work); }
     }
@@ -177,12 +191,39 @@ public sealed partial class BackupCoordinator
         string work = Work();
         try
         {
-            var snapshots = (await ReadPackedCatalogsAsync(provider, work, ct)).SelectMany(owner => owner.State.Snapshots).ToList();
-            if (includeLegacy) snapshots.AddRange(await ReadPublishedSnapshotsAsync(provider, work, ct));
+            var snapshots = new List<SnapshotManifest>();
+            foreach (PackedCatalog owner in await ReadPackedCatalogsAsync(provider, work, ct))
+            {
+                Dictionary<string, SaveManifest> saves = owner.State.Saves.ToDictionary(save => save.ManifestPath, StringComparer.Ordinal);
+                foreach (SnapshotManifest snapshot in owner.State.Snapshots)
+                {
+                    FillSnapshotSaveGames(snapshot, snapshot.SaveManifestPaths.Select(path => saves[path]));
+                    snapshots.Add(snapshot);
+                }
+            }
+            if (includeLegacy)
+            {
+                List<SnapshotManifest> legacySnapshots = await ReadPublishedSnapshotsAsync(provider, work, ct);
+                var saves = new Dictionary<string, SaveManifest>(StringComparer.Ordinal);
+                foreach (string path in legacySnapshots.SelectMany(snapshot => snapshot.SaveManifestPaths).Distinct(StringComparer.Ordinal))
+                {
+                    SaveManifest save = await ReadVersionedJsonAsync<SaveManifest>(provider, path, work, ct);
+                    ValidateVersionedSave(save, path);
+                    saves.Add(path, save);
+                }
+                foreach (SnapshotManifest snapshot in legacySnapshots)
+                {
+                    FillSnapshotSaveGames(snapshot, snapshot.SaveManifestPaths.Select(path => saves[path]));
+                    snapshots.Add(snapshot);
+                }
+            }
             return snapshots.OrderByDescending(snapshot => snapshot.CreatedUtc).ToList();
         }
         finally { RemoveWork(work); }
     }
+    private static void FillSnapshotSaveGames(SnapshotManifest snapshot, IEnumerable<SaveManifest> saves) =>
+        snapshot.SaveGames = saves.GroupBy(save => save.Game.Id).ToDictionary(group => group.Key, group => group.Max(save => save.CapturedUtc));
+
     private async Task<SaveManifest> CopySaveToPackedAsync(IBackupProvider provider, PackedArchiveStore target, SaveManifest source,
         PackedCatalog? owner, string work, CancellationToken ct)
     {

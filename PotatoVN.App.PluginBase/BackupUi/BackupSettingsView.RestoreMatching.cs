@@ -29,14 +29,16 @@ public sealed partial class BackupSettingsView
             string label = GameSearchItem.FromCloudGame(cloud).Detail;
             if (analysis.AutomaticTargets.TryGetValue(cloud.Id, out Guid occupied))
                 label += " · 已对应本地：" + analysis.LocalGames.Single(g => g.Id == occupied).Name;
-            options.Add(new GameSearchItem(cloud.Id, cloud.Name, label));
+            options.Add(GameSearchItem.FromCloudGame(cloud) with { Detail = label,
+                Badge = analysis.AutomaticTargets.ContainsKey(cloud.Id) ? "已匹配" : "未匹配",
+                Tone = analysis.AutomaticTargets.ContainsKey(cloud.Id) ? StatusTone.Info : StatusTone.Warning });
         }
         foreach (GameIdentity local in analysis.UnmatchedLocalGames.OrderByDescending(g => g.LocalDirectory != null)
                      .ThenBy(g => g.Name, StringComparer.CurrentCultureIgnoreCase))
         {
             var group = Stack(4);
-            group.Children.Add(Heading(local.Name, "BodyStrongTextBlockStyle"));
-            group.Children.Add(Note(local.LocalDirectory is { } directory ? "本地目录：" + directory : "仅有资料，尚未关联本地目录"));
+            group.Children.Add(GameEntryContent(local, System.IO.Directory.Exists(local.LocalDirectory) ? "已关联" : "未关联",
+                System.IO.Directory.Exists(local.LocalDirectory) ? StatusTone.Info : StatusTone.Warning));
             var choice = new GameSearchPicker("对应的云端游戏");
             choice.SetItems(options, null);
             group.Children.Add(choice); panel.Children.Add(group); rows.Add((local.Id, choice));

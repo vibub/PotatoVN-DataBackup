@@ -191,13 +191,14 @@ public sealed partial class BackupSettingsView
         if (ids.Length != 1) throw new InvalidOperationException("请只选择一个存档位置，再设置对应游戏与目标。");
         PendingRestore entry = _controller.GetPending().First(p => p.Id == ids[0]);
         var game = new GameSearchPicker("对应的本机游戏");
-        game.SetItems(new[] { new GameSearchItem(null, "自动识别对应条目", "保留自动识别规则") }
+        game.SetItems(new[] { new GameSearchItem(null, "自动识别对应条目", "保留自动识别规则") { Badge = "自动识别", Tone = StatusTone.Info } }
             .Concat(_controller.GetGames().OrderBy(candidate => candidate.Name, StringComparer.CurrentCultureIgnoreCase).Select(GameSearchItem.FromGame)),
             entry.LocalGameId);
         var target = TextInput("本机目标路径", "留空则按备份位置规则解析");
         target.Text = entry.TargetOverride ?? "";
         var body = Stack();
-        body.Children.Add(Note($"备份游戏：{entry.Manifest.Game.Name}\n版本时间：{entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}"));
+        body.Children.Add(GameEntryContent(entry.Manifest.Game, "云端存档", StatusTone.Info));
+        body.Children.Add(SecondaryText($"版本时间：{entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}"));
         body.Children.Add(game);
         body.Children.Add(target);
         SaveLocation? location = entry.Manifest.Locations.FirstOrDefault(l => l.Id == entry.LocationId);
@@ -220,7 +221,7 @@ public sealed partial class BackupSettingsView
         UpdateTargetPreview();
         var error = new InfoBar { Severity = InfoBarSeverity.Error, IsClosable = false };
         body.Children.Add(error);
-        var dialog = NewDialog("设置存档恢复位置", body, "保存对应关系");
+        var dialog = NewDialog("设置存档恢复位置", new ScrollViewer { Content = body, MaxHeight = 500 }, "保存对应关系");
         dialog.PrimaryButtonClick += (_, args) =>
         {
             if (game.HasPendingQuery)

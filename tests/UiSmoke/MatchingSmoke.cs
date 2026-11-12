@@ -92,7 +92,7 @@ public sealed partial class SmokeApp
         Check(!duplicatePreview.IsCompleted && FindAll<InfoBar>(duplicates).Any(info => info.IsOpen),
             "未确认搜索候选时应拦截恢复。");
         pickers[0].SelectedId = unmatched.Games[0].Id;
-        Check(((IEnumerable<GameSearchItem>)pickers[1].SearchBox.ItemsSource).Single(item => item.Id == unmatched.Games[0].Id).Detail.Contains("本轮已选择"),
+        Check(pickers[1].Results.Items.OfType<ListViewItem>().Select(row => (GameSearchItem)row.Tag).Single(item => item.Id == unmatched.Games[0].Id).Detail.Contains("本轮已选择"),
             "被其他本地游戏选中的云端候选应标注占用信息。");
         pickers[1].SelectedId = unmatched.Games[0].Id;
         InvokePrimary(duplicates);

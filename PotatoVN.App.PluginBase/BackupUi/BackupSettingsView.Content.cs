@@ -183,7 +183,13 @@ public sealed partial class BackupSettingsView
     private bool IncludesGameCategory(GameIdentity game) =>
         (System.IO.Directory.Exists(game.LocalDirectory) ? _localGames : _nonLocalGames).IsChecked == true;
 
-    private static ListViewItem GameListItem(GameIdentity game, string state, StatusTone tone = StatusTone.Neutral, bool showUnlinked = false)
+    internal static ListViewItem GameListItem(GameIdentity game, string state, StatusTone tone = StatusTone.Neutral, bool showUnlinked = false)
+    {
+        return new ListViewItem { Tag = game, Content = GameEntryContent(game, state, tone, showUnlinked), HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(10, 10, 10, 12), Margin = new Thickness(0, 0, 0, 6) };
+    }
+
+    private static StackPanel GameEntryContent(GameIdentity game, string state, StatusTone tone, bool showUnlinked = false)
     {
         var content = Stack(8);
         var name = Heading(game.Name, "BodyStrongTextBlockStyle");
@@ -195,8 +201,7 @@ public sealed partial class BackupSettingsView
         badges.Children.Add(StatusBadge(state, tone));
         if (showUnlinked) badges.Children.Add(StatusBadge("未关联", StatusTone.Warning));
         content.Children.Add(badges);
-        return new ListViewItem { Tag = game, Content = content, HorizontalContentAlignment = HorizontalAlignment.Stretch,
-            Padding = new Thickness(10, 10, 10, 12), Margin = new Thickness(0, 0, 0, 6) };
+        return content;
     }
 
     private StackPanel BuildAutomationTab()

@@ -39,7 +39,7 @@ public sealed partial class BackupSettingsView : UserControl
     private readonly TextBox _logText = new()
     {
         IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
-        Height = 88, Visibility = Visibility.Collapsed, Header = null, PlaceholderText = "操作结果和备份进度会显示在这里。"
+        Height = 120, FontSize = 12, Visibility = Visibility.Collapsed, Header = null, PlaceholderText = "操作结果和备份进度会显示在这里。"
     };
     private CancellationTokenSource? _operationCts;
     private FrameworkElement? _viewportHost;
@@ -248,11 +248,19 @@ public sealed partial class BackupSettingsView : UserControl
         RefreshStatus();
     }
 
+    private string _lastLogStage = "";
+    private static string LogStage(string text) => text.StartsWith("正在校验存档") ? "save-check" :
+        text.StartsWith("正在上传变化内容") ? "upload" : "";
+
     private void AddLog(string text)
     {
-        _logEntries.Add($"{DateTime.Now:HH:mm:ss}  {text}");
+        string stage = LogStage(text);
+        string entry = $"{DateTime.Now:HH:mm:ss}  " + text.Replace("\n", "\n    ");
+        if (stage.Length > 0 && stage == _lastLogStage && _logEntries.Count > 0) _logEntries[^1] = entry;
+        else _logEntries.Add(entry);
+        _lastLogStage = stage;
         if (_logEntries.Count > 60) _logEntries.RemoveAt(0);
-        _logText.Text = string.Join(Environment.NewLine, _logEntries.AsEnumerable().Reverse());
+        _logText.Text = string.Join(Environment.NewLine + Environment.NewLine, _logEntries.AsEnumerable().Reverse());
     }
 
     private async Task RunAsync(Func<CancellationToken, Task> action, bool showSuccess = true, string? successMessage = null, int? pageIndex = null)

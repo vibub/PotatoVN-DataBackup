@@ -218,6 +218,7 @@ public sealed partial class SmokeApp : Application
                 navigation.SelectedIndex = 4;
                 await Task.Delay(120);
                 await CheckPendingTargetSwitchAsync(view, controller, results);
+                await CheckHistoryUiAsync(view, controller, host, navigation, results);
                 navigation.SelectedIndex = 0;
                 await RunMatchingSmokeAsync(view, controller, results);
                 File.WriteAllLines(Path.Combine(Program.Output, "result.txt"), results);
@@ -648,9 +649,16 @@ internal sealed class DemoController : IBackupUiController
     public Task AuthorizeAsync(Guid id, CancellationToken token) => Disabled();
     public Task ProbeAsync(Guid id, CancellationToken token) => Disabled();
     public Task BackupAsync(CancellationToken token) => Disabled();
-    public Task<IReadOnlyList<SnapshotManifest>> ListSnapshotsAsync(CancellationToken token) => Task.FromResult<IReadOnlyList<SnapshotManifest>>([]);
+    public IReadOnlyList<SnapshotManifest> Snapshots { get; set; } = [];
+    public Task<IReadOnlyList<SnapshotManifest>> ListSnapshotsAsync(CancellationToken token) => Task.FromResult(Snapshots);
     public Task RestoreSnapshotAsync(SnapshotManifest snapshot, BackupContent content, CancellationToken token, RestoreMatchingDecisions? matching = null) => Disabled();
-    public Task ConfigureGameMappingAsync(Guid backupId, Guid localId, CancellationToken token) => Disabled();
+    public Task ConfigureGameMappingAsync(Guid backupId, Guid localId, CancellationToken token)
+    {
+        OperationCalls++;
+        Settings.GameMappings.RemoveAll(item => item.BackupGameId == backupId);
+        Settings.GameMappings.Add(new GameMatchMapping { BackupGameId = backupId, LocalGameId = localId });
+        return Task.CompletedTask;
+    }
     public Task ConfigurePendingAsync(Guid id, Guid? game, string? path, CancellationToken token) => Disabled();
     public Task RestorePendingAsync(IReadOnlyList<Guid> ids, CancellationToken token) => Disabled();
     public Task ClearPendingAsync(IReadOnlyList<Guid> ids, CancellationToken token) => Disabled();
