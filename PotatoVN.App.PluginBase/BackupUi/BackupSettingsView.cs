@@ -250,7 +250,8 @@ public sealed partial class BackupSettingsView : UserControl
 
     private string _lastLogStage = "";
     private static string LogStage(string text) => text.StartsWith("正在校验存档") ? "save-check" :
-        text.StartsWith("正在上传变化内容") ? "upload" : "";
+        text.StartsWith("正在上传变化内容") ? "upload" :
+        text.StartsWith("正在校验与重建恢复文件") ? "restore-check" : "";
 
     private void AddLog(string text)
     {

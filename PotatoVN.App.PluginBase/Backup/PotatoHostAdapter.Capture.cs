@@ -56,7 +56,7 @@ public sealed partial class PotatoHostAdapter
         foreach (string key in SettingKeys)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            export.Settings[key] = writer.Serialize(await ReadSettingAsync(key));
+            export.Settings[key] = await _portableSettings.ReadAsync(key);
         }
         return export;
     }

@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json.Nodes;
 using System.Runtime.Loader;
 using LiteDB;
 using PotatoVN.App.PluginBase.Backup;
@@ -68,9 +69,31 @@ try
         var result = writer.Serialize(model)!;
         Check(result["Name"]!.GetValue<string>() == "合成资料" && result["Hidden"] == null && result["Self"] == null, "跨上下文JsonIgnore失效或发生循环引用");
         Console.WriteLine("PASS host Newtonsoft honors cross-context model JsonIgnore and avoids self reference");
+        object foreignSettings = Activator.CreateInstance(models.GetType(nameof(SyntheticHostSettings), true)!)!;
+        var values = (Dictionary<string, string>)foreignSettings.GetType().GetProperty("Values")!.GetValue(foreignSettings)!;
+        var settings = new HostSettingsAccess(foreignSettings, json);
+        values["language"] = "null";
+        bool nullFailed = false;
+        try { foreignSettings.GetType().GetMethod("ReadLanguage")!.Invoke(foreignSettings, null); }
+        catch (TargetInvocationException error) when (error.InnerException?.GetType().FullName == "Newtonsoft.Json.JsonSerializationException") { nullFailed = true; }
+        Check(nullFailed, "未复现JSON null令宿主非空语言枚举读取失败");
+        await settings.WriteAsync("language", null);
+        Check(!values.ContainsKey("language") && (int)foreignSettings.GetType().GetMethod("ReadLanguage")!.Invoke(foreignSettings, null)! == 0,
+            "未配置语言应移除键并使用默认值，不能写入JSON null");
+        Console.WriteLine("PASS reproduced null enum startup failure; unset restore removes key and keeps default readable");
+        await settings.WriteAsync("sortKeys", JsonNode.Parse("[1,2]"));
+        await settings.WriteAsync("ascending", JsonNode.Parse("[false,true]"));
+        Check(values["sortKeys"] == "[1,2]" && values["ascending"] == "[false,true]", "跨上下文写入数组变成空数组");
+        Console.WriteLine("PASS host-context restore preserves numeric and boolean arrays");
+        values["nested"] = "{\"order\":[8,1,5],\"enabled\":{\"source\":true}}";
+        JsonNode before = (await settings.ReadAsync("nested"))!;
+        await settings.WriteAsync("nested", before);
+        Check(JsonNode.DeepEquals(before, JsonNode.Parse(values["nested"])), "导出或回滚读取破坏嵌套JObject/JArray");
+        Check((await settings.ReadAsync("absent")) == null, "未配置设置应保持空值语义");
+        Console.WriteLine("PASS host-context export and rollback capture preserve nested settings and unset values");
     }
     finally { jsonContext.Unload(); }
-    Console.WriteLine("PASS 5 host interop checks; synthetic data only");
+    Console.WriteLine("PASS 8 host interop checks; synthetic data only");
     return 0;
 }
 finally
@@ -97,4 +120,20 @@ sealed class JsonContext(string jsonPath) : AssemblyLoadContext(isCollectible: t
         using Stream bytes = File.OpenRead(jsonPath);
         return LoadFromStream(bytes);
     }
+}
+
+public enum SyntheticLanguage { Auto, Chinese }
+public sealed class SyntheticHostSettings
+{
+    public Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
+    public async Task<T?> ReadSettingAsync<T>(string key, bool isLarge = false, List<Newtonsoft.Json.JsonConverter>? converters = null, bool typeNameHandling = false)
+    {
+        await Task.CompletedTask;
+        return Values.TryGetValue(key, out string? raw) ? Newtonsoft.Json.JsonConvert.DeserializeObject<T>(raw) : default;
+    }
+    public Task SaveSettingAsync<T>(string key, T value, bool isLarge = false, bool triggerEventWhenNull = false,
+        List<Newtonsoft.Json.JsonConverter>? converters = null, bool typeNameHandling = false)
+    { Values[key] = Newtonsoft.Json.JsonConvert.SerializeObject(value); return Task.CompletedTask; }
+    public Task RemoveSettingAsync(string key, bool isLarge = false) { Values.Remove(key); return Task.CompletedTask; }
+    public int ReadLanguage() => Values.TryGetValue("language", out string? raw) ? (int)Newtonsoft.Json.JsonConvert.DeserializeObject<SyntheticLanguage>(raw) : 0;
 }

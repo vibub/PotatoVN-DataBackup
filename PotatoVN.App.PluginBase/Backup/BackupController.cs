@@ -47,6 +47,7 @@ public sealed class BackupController : IBackupUiController, IDisposable
         _secrets = new DpapiSecretStore(Path.Combine(host.StateRoot, "secrets"));
         _coordinator = new BackupCoordinator(host.StateRoot, host, settings, store, pending, p => BackupProviderFactory.Create(p, _secrets));
         _coordinator.BackupProgress += (percent, _) => BackupProgressPercent = percent;
+        _coordinator.RestoreProgress += (percent, _) => BackupProgressPercent = percent;
         _coordinator.Progress += text => { Status = text; Changed(); };
         Changed();
         _ = WatchAsync();
@@ -110,7 +111,7 @@ public sealed class BackupController : IBackupUiController, IDisposable
 
     private Task BackupAsync(CancellationToken ct, bool automatic) => RunAsync("正在备份…", async token =>
     {
-        using var task = new CloudBackupTask(async backupToken =>
+        using var task = new CloudTransferTask("云备份", async backupToken =>
         {
             await Task.Run(() => _coordinator.BackupAsync(backupToken, automatic), backupToken);
         }, () => Status, token);
@@ -142,8 +143,21 @@ public sealed class BackupController : IBackupUiController, IDisposable
     {
         if (!_listedProfiles.TryGetValue(snapshot.ManifestPath, out Guid profile) || profile != _coordinator.ActiveProfile.Id)
             throw new InvalidOperationException("渠道已改变，请重新刷新并选择该渠道的备份版本。");
-        await _coordinator.StageRestoreAsync(snapshot, content, token, matching);
-        Status = "所选恢复内容已处理；存档请在待恢复区手动确认恢复。";
+        using var task = new CloudTransferTask("云恢复", async restoreToken =>
+        {
+            await Task.Run(() => _coordinator.StageRestoreAsync(snapshot, content, restoreToken, matching), restoreToken);
+            Status = (content & ~BackupContent.Saves) != BackupContent.None
+                ? "恢复文件已准备，重启后完成导入；存档在待恢复区确认写入。"
+                : "存档已下载到待恢复区，请确认目标后写入。";
+        }, () => Status, token);
+        _coordinator.RestoreProgress += task.Report;
+        try
+        {
+            Task registered = await _host.OnMainAsync(() => _api.AddBgTask(task));
+            await registered;
+            await task.Task;
+        }
+        finally { _coordinator.RestoreProgress -= task.Report; }
     }, ct);
 
     public Task ConfigureGameMappingAsync(Guid backupGameId, Guid localGameId, CancellationToken ct) => RunAsync("正在保存游戏对应关系…", async token =>

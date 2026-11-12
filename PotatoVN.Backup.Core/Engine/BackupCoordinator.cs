@@ -15,6 +15,12 @@ public sealed partial class BackupCoordinator
     public PendingRestoreStore Pending { get; }
     public event Action<string>? Progress;
     public event Action<int, string>? BackupProgress;
+    public event Action<int, string>? RestoreProgress;
+    private void ReportRestore(int percent, string text)
+    {
+        RestoreProgress?.Invoke(percent, text);
+        Report(text);
+    }
     private void ReportBackup(int percent, string text)
     {
         BackupProgress?.Invoke(percent, text);

@@ -24,6 +24,7 @@ public sealed class PackedArchiveStore
     public int ReusedFiles { get; private set; }
     public long UploadedBytes { get; private set; }
     public event Action<int, int>? UploadProgress;
+    public event Action<int, int>? RestoreProgress;
     public PackedArchiveStore(IBackupProvider provider, PackedCatalog catalog, string work)
     {
         _provider = provider; _catalog = catalog;
@@ -204,6 +205,7 @@ public sealed class PackedArchiveStore
         string temporary = target + ".packed-" + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
+            int restored = 0;
             using (var outputZip = ZipFile.Open(temporary, ZipArchiveMode.Create))
             foreach (var group in recipe.Files.GroupBy(file => State.Files.TryGetValue(file.Sha256, out var location) ? location.ObjectId : throw new InvalidDataException("索引缺少文件对象。")))
             {
@@ -222,6 +224,7 @@ public sealed class PackedArchiveStore
                     await using Stream input = packed != null ? (packed.GetEntry(file.Sha256)?.Open() ?? throw new InvalidDataException("云端包缺少文件。")) : new GZipStream(File.OpenRead(downloaded), CompressionMode.Decompress);
                     await using Stream output = entry.Open();
                     await CopyVerifiedAsync(input, output, file, ct);
+                    RestoreProgress?.Invoke(++restored, recipe.Files.Count);
                 }
             }
             ct.ThrowIfCancellationRequested();

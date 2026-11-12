@@ -51,6 +51,11 @@ public sealed partial class SmokeApp : Application
 #pragma warning disable CS0618
         GalgameManager.WinApp.Base.Helpers.UiThreadInvokeHelper.Init(DispatcherQueue.GetForCurrentThread());
 #pragma warning restore CS0618
+        if (Environment.GetEnvironmentVariable("POTATOVN_UI_SMOKE_TASKS_ONLY") == "1")
+        {
+            _ = RunHeadlessTransferChecksAsync();
+            return;
+        }
         var controller = new DemoController();
         var view = new BackupSettingsView(controller, () => WinRT.Interop.WindowNative.GetWindowHandle(_window!));
         // 模拟插件管理页：宿主标题占据一部分高度，设置控件位于外层滚动容器中。
@@ -232,6 +237,22 @@ public sealed partial class SmokeApp : Application
             finally { _window.Close(); Exit(); }
         };
         _window.Activate();
+    }
+
+    private async Task RunHeadlessTransferChecksAsync()
+    {
+        var results = new List<string>();
+        try
+        {
+            await CheckCloudTransferTasksAsync(results);
+            File.WriteAllLines(Path.Combine(Program.Output, "result.txt"), results);
+        }
+        catch (Exception error)
+        {
+            File.WriteAllText(Path.Combine(Program.Output, "error.txt"), error.ToString());
+            Environment.ExitCode = 1;
+        }
+        finally { Exit(); }
     }
 
     private static Button FindButton(DependencyObject view, string label) =>

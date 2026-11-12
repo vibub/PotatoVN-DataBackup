@@ -356,7 +356,7 @@ public sealed partial class BackupCoordinator
         string work = Work();
         try
         {
-            Report("正在下载并校验备份…");
+            ReportRestore(2, "正在读取恢复索引…");
             var archives = new IncrementalArchiveStore(provider, work);
             PackedCatalog? packedCatalog = snapshot.FormatVersion == 3 ? await PackedCatalog.LoadAsync(provider, snapshot.DeviceId, work, ct) : null;
             PackedArchiveStore? packed = packedCatalog == null ? null : new PackedArchiveStore(provider, packedCatalog, work);
@@ -368,9 +368,21 @@ public sealed partial class BackupCoordinator
                     throw new InvalidDataException("所选版本与云端已提交索引不一致，请刷新历史。");
                 snapshot = authoritative;
             }
+            int restoredFiles = 0;
+            int totalFiles = packedCatalog == null ? 0 :
+                ((content & ~BackupContent.Saves) == BackupContent.None ? 0 :
+                    (snapshot.DataRecipe?.Files.Count ?? 0) + (snapshot.MediaRecipe?.Files.Count ?? 0)) +
+                (content.HasFlag(BackupContent.Saves) ? packedCatalog.State.Saves.Where(save => snapshot.SaveManifestPaths.Contains(save.ManifestPath)).Sum(save => save.Files.Count) : 0);
+            if (packed != null) packed.RestoreProgress += (_, _) =>
+            {
+                restoredFiles++;
+                ReportRestore(10 + 55 * restoredFiles / Math.Max(1, totalFiles), $"正在校验与重建恢复文件：{restoredFiles}/{totalFiles}");
+            };
+            int DownloadPercent() => 10 + 55 * restoredFiles / Math.Max(1, totalFiles);
             string? data = null, media = null;
             if ((content & ~BackupContent.Saves) != BackupContent.None)
             {
+                ReportRestore(DownloadPercent(), "正在下载游戏资料与图片…");
                 data = Path.Combine(work, "data.zip");
                 if (snapshot.FormatVersion == 1)
                 {
@@ -399,6 +411,7 @@ public sealed partial class BackupCoordinator
             {
                 foreach (string manifestPath in snapshot.SaveManifestPaths)
                 {
+                    ReportRestore(DownloadPercent(), $"正在下载游戏存档：{downloadedSaves.Count + 1}/{snapshot.SaveManifestPaths.Count}");
                     SaveManifest save = packedCatalog == null ? await ReadVersionedJsonAsync<SaveManifest>(provider, manifestPath, work, ct)
                         : packedCatalog.State.Saves.Single(item => item.ManifestPath == manifestPath);
                     ValidateVersionedSave(save, manifestPath);
@@ -424,13 +437,16 @@ public sealed partial class BackupCoordinator
             SoftwareMergeResult? merged = null;
             if (data != null || matching?.Merges.Count > 0)
             {
+                ReportRestore(70, "正在读取本机资料…");
                 HostExport current = await _host.ExportAsync(Path.Combine(work, "current"), ct);
+                ReportRestore(80, "正在合并所选资料…");
                 merged = data != null
                     ? await SoftwareBackupCodec.MergeAsync(current, data, media, content, working, localGames, Path.Combine(work, "merged"), ct)
                     : await SoftwareBackupCodec.MergeLocalGamesAsync(current, working, localGames, Path.Combine(work, "merged"), ct);
                 if (merged.Conflicts.Count > 0)
                     throw new InvalidOperationException("请先确定以下游戏的对应关系，再恢复：" + string.Join("；", merged.Conflicts));
             }
+            ReportRestore(90, "正在保存待恢复存档与对应关系…");
             foreach (var (save, archive) in downloadedSaves)
             {
                 Guid? target = matching != null ? matching.Targets[save.Game.Id] : null;
@@ -475,9 +491,10 @@ public sealed partial class BackupCoordinator
             if (downloadedSaves.Count > 0) Report("存档已下载到待恢复区；关联游戏后请手动恢复。");
             if (merged != null)
             {
-                Report((merged.Notices.Count == 0 ? "" : string.Join("；", merged.Notices) + "；") + "软件资料已准备，正在重启 PotatoVN 完成导入…");
+                ReportRestore(96, (merged.Notices.Count == 0 ? "" : string.Join("；", merged.Notices) + "；") + "软件资料已准备，正在重启 PotatoVN 完成导入…");
                 await _host.StageImportAsync(merged.ArchivePath, merged.Settings, ct);
             }
+            ReportRestore(100, merged == null ? "存档下载完成，请在待恢复区确认写入。" : "恢复文件已准备，重启后完成导入。");
         }
         finally
         {

@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.Loader;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -30,6 +31,7 @@ public sealed partial class PotatoHostAdapter : IBackupHost
     private readonly DispatcherQueue _dispatcher;
     private readonly Assembly _hostAssembly;
     private readonly object _settings;
+    private readonly HostSettingsAccess _portableSettings;
     private readonly string _stateRoot;
     public string DataRoot { get; }
     public string StateRoot => _stateRoot;
@@ -44,6 +46,8 @@ public sealed partial class PotatoHostAdapter : IBackupHost
             ?? throw new InvalidOperationException("请在主线程初始化云备份插件。");
         _hostAssembly = AppDomain.CurrentDomain.GetAssemblies().First(a => a.GetType("GalgameManager.App") != null);
         _settings = Service("GalgameManager.Contracts.Services.ILocalSettingsService");
+        Assembly jsonAssembly = AssemblyLoadContext.GetLoadContext(_hostAssembly)!.Assemblies.Single(assembly => assembly.GetName().Name == "Newtonsoft.Json");
+        _portableSettings = new HostSettingsAccess(_settings, jsonAssembly);
         DataRoot = ((DirectoryInfo)Property(_settings, "LocalFolder")).FullName;
         string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(DataRoot).ToUpperInvariant())))[..16];
         _stateRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PotatoVN-DataBackup", key);
@@ -139,8 +143,7 @@ public sealed partial class PotatoHostAdapter : IBackupHost
         foreach (string key in SettingKeys)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            object? value = await ReadSettingAsync(key);
-            values[key] = value == null ? null : JsonNode.Parse(Newtonsoft.Json.JsonConvert.SerializeObject(value));
+            values[key] = await _portableSettings.ReadAsync(key);
         }
         // 上游 ExportTask 只复制旧主页 JSON；新版主页已迁至 LiteDB，需要补齐。
         var live = new HostDatabaseReader(Property(_settings, "Database"));
@@ -155,21 +158,10 @@ public sealed partial class PotatoHostAdapter : IBackupHost
         return new HostExport { ArchivePath = archive, Settings = values };
     }
 
-    private async Task<object?> ReadSettingAsync(string key)
-    {
-        MethodInfo method = _settings.GetType().GetMethods().Single(m => m.Name == "ReadSettingAsync" && m.IsGenericMethodDefinition);
-        Task task = (Task)method.MakeGenericMethod(typeof(object)).Invoke(_settings, [key, false, null, false])!;
-        await task;
-        return task.GetType().GetProperty("Result")?.GetValue(task);
-    }
-
-    private async Task WriteSettingAsync(string key, JsonNode? value)
+    private Task WriteSettingAsync(string key, JsonNode? value)
     {
         if (!SettingKeys.Contains(key, StringComparer.Ordinal)) throw new InvalidDataException($"不能恢复此设置：{key}");
-        MethodInfo method = _settings.GetType().GetMethods().Single(m => m.Name == "SaveSettingAsync" && m.IsGenericMethodDefinition);
-        object? parsed = value == null ? null : Newtonsoft.Json.JsonConvert.DeserializeObject(value.ToJsonString());
-        Task task = (Task)method.MakeGenericMethod(typeof(object)).Invoke(_settings, [key, parsed, false, false, null, false])!;
-        await task;
+        return _portableSettings.WriteAsync(key, value);
     }
 
     public async Task CompletePendingImportAsync()
@@ -264,8 +256,7 @@ public sealed partial class PotatoHostAdapter : IBackupHost
         foreach (var item in settings)
         {
             if (!SettingKeys.Contains(item.Key, StringComparer.Ordinal)) throw new InvalidDataException("备份包含不允许恢复的设置。");
-            object? value = await ReadSettingAsync(item.Key);
-            before[item.Key] = value == null ? null : JsonNode.Parse(Newtonsoft.Json.JsonConvert.SerializeObject(value));
+            before[item.Key] = await _portableSettings.ReadAsync(item.Key);
             after[item.Key] = item.Value?.DeepClone();
         }
         string settingsFile = Path.Combine(_stateRoot, "settings-restore.json");

@@ -142,14 +142,29 @@ async Task RestoreFlow()
     var fixture = Fixture.Create(root);
     SnapshotManifest snapshot = await fixture.Coordinator.BackupAsync();
     Check((await fixture.Coordinator.ListSnapshotsAsync()).Any(item => item.ManifestPath == snapshot.ManifestPath), "默认历史没有v3版本");
+    var progress = new List<int>();
+    fixture.Coordinator.RestoreProgress += (percent, _) => progress.Add(percent);
     await fixture.Coordinator.StageRestoreAsync(snapshot, BackupContent.Saves);
+    Check(progress.Count > 2 && progress[^1] == 100 && progress.Zip(progress.Skip(1)).All(pair => pair.Second >= pair.First), "仅存档恢复进度缺失或倒退");
     Check(fixture.Coordinator.Pending.Items.Count == 1 && fixture.Host.FullExports == 0, "仅恢复存档不应完整导出或自动写游戏目录");
     PendingRestore item = fixture.Coordinator.Pending.Items.Single();
     Check(item.Manifest.FormatVersion == 1 && item.Manifest.Recipe == null, "待恢复区没有转换为本机ZIP");
+    progress.Clear();
+    fixture.Host.BeforeImport = () => Check(progress.Count > 0 && progress[^1] == 96 && !progress.Contains(100), "导入准备结束前不得报告100%");
     await fixture.Coordinator.StageRestoreAsync(snapshot, BackupContent.GameInfo | BackupContent.Covers);
+    Check(progress[^1] == 100 && progress.Zip(progress.Skip(1)).All(pair => pair.Second >= pair.First) && progress.Any(value => value > 10 && value <= 65), "资料恢复进度不单调或没有实际文件进度");
     Check(fixture.Host.FullExports == 1 && fixture.Host.ImportedArchive != null, "软件恢复未走原生合并流程");
     using var archive = new ZipArchive(new MemoryStream(fixture.Host.ImportedArchive!));
     Check(archive.GetEntry("data.galgames.json") != null, "合并包缺少游戏资料");
+    progress.Clear();
+    fixture.Host.BeforeImport = () => throw new IOException("synthetic import preparation failure");
+    await Fails<IOException>(() => fixture.Coordinator.StageRestoreAsync(snapshot, BackupContent.GameInfo));
+    Check(!progress.Contains(100), "导入准备失败不得报告成功");
+    progress.Clear();
+    using var cancelled = new CancellationTokenSource();
+    fixture.Host.BeforeImport = cancelled.Cancel;
+    await Fails<OperationCanceledException>(() => fixture.Coordinator.StageRestoreAsync(snapshot, BackupContent.GameInfo, cancelled.Token));
+    Check(!progress.Contains(100), "导入准备取消不得报告成功");
 }
 
 async Task MissingAndCorrupt()
@@ -376,6 +391,7 @@ sealed class Host(GameIdentity game, string root) : IBackupHost
 {
     public int PlayCount = 1, FullExports;
     public byte[]? ImportedArchive;
+    public Action? BeforeImport;
     public byte[] Image = [1, 2, 3, 4, 5];
     public IReadOnlyList<GameIdentity> GetGames() => [game];
     public async Task<HostExport> ExportForBackupAsync(string directory, CancellationToken ct)
@@ -401,7 +417,12 @@ sealed class Host(GameIdentity game, string root) : IBackupHost
         }
         return new HostExport { ArchivePath = archive, Settings = source.Settings };
     }
-    public async Task StageImportAsync(string archive, Dictionary<string, JsonNode?> settings, CancellationToken ct) => ImportedArchive = await File.ReadAllBytesAsync(archive, ct);
+    public async Task StageImportAsync(string archive, Dictionary<string, JsonNode?> settings, CancellationToken ct)
+    {
+        BeforeImport?.Invoke();
+        ct.ThrowIfCancellationRequested();
+        ImportedArchive = await File.ReadAllBytesAsync(archive, ct);
+    }
 }
 sealed class Remote
 {
