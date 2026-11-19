@@ -13,7 +13,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using GalgameManager.Enums;
 using GalgameManager.Models;
-using GalgameManager.Models.BgTasks;
 using GalgameManager.WinApp.Base.Contracts;
 using LiteDB;
 using Microsoft.UI.Dispatching;
@@ -134,43 +133,6 @@ public sealed partial class PotatoHostAdapter : IBackupHost
             .Where(path => !string.Equals(path, installation, StringComparison.OrdinalIgnoreCase))
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }).GetAwaiter().GetResult();
-
-    public async Task<HostExport> ExportAsync(string workDirectory, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-        Directory.CreateDirectory(workDirectory);
-        BgTaskBase task = await OnMainAsync(() =>
-        {
-            if (_api.GetBgTasks().Any(t => t.GetType().FullName == "GalgameManager.Models.BgTasks.ExportTask" && t.IsRunning))
-                throw new InvalidOperationException("主程序正在导出数据，请稍后再试。");
-            Type exportType = _hostAssembly.GetType("GalgameManager.Models.BgTasks.ExportTask", true)!;
-            return (BgTaskBase)Activator.CreateInstance(exportType, workDirectory)!;
-        });
-        Task hostTask = await OnMainAsync(() => _api.AddBgTask(task));
-        await hostTask; // 宿主会记录错误但可能吞掉异常，因此还需要等待原任务。
-        await task.Task;
-        cancellationToken.ThrowIfCancellationRequested();
-        string? archive = Directory.GetFiles(workDirectory, "*.pvnExport.zip").SingleOrDefault();
-        if (archive == null || task.CurrentProgress.Current < 0)
-            throw new IOException("PotatoVN 未能生成完整的导出文件，请查看主程序事件记录。");
-        Dictionary<string, JsonNode?> values = [];
-        foreach (string key in SettingKeys)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            values[key] = await _portableSettings.ReadAsync(key);
-        }
-        // 上游 ExportTask 只复制旧主页 JSON；新版主页已迁至 LiteDB，需要补齐。
-        var live = new HostDatabaseReader(Property(_settings, "Database"));
-        if (live.CollectionExists("homepage_list"))
-        {
-            BsonArray home = new(live.ReadDocuments("homepage_list").Select(d => (BsonValue)d));
-            using ZipArchive zip = ZipFile.Open(archive, ZipArchiveMode.Update);
-            zip.GetEntry("data.homepage_list.json")?.Delete();
-            using StreamWriter homeWriter = new(zip.CreateEntry("data.homepage_list.json").Open());
-            homeWriter.Write(LiteDB.JsonSerializer.Serialize(home));
-        }
-        return new HostExport { ArchivePath = archive, Settings = values };
-    }
 
     private Task WriteSettingAsync(string key, JsonNode? value)
     {

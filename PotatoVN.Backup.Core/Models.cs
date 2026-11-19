@@ -181,6 +181,7 @@ public sealed class PendingRestore
 public sealed class HostExport
 {
     public string ArchivePath { get; set; } = "";
+    // 本次任务专用的原生文件目录。恢复合并可就地更新其中的文件。
     public string? NativeDirectory { get; set; }
     public Dictionary<string, string> MediaPaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> Settings { get; set; } = [];

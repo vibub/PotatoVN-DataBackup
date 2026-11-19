@@ -32,6 +32,7 @@ internal static class RestoreMatchingChecks
             ("合并迁移别名、游戏范围、存档配置并保留无关配置", MappingMigrationAsync),
             ("原生包合并只删重复记录并迁移所有引用", NativeLocalMergeAsync),
             ("合并后资料覆盖只应用勾选类型", SelectedOverlayAfterMergeAsync),
+            ("直接采集的目录可恢复并保留本机图片与页面设置", RestoreFromDirectoryAsync),
             ("存档不关联排除跨重启保留且可显式重关联", PendingExclusionAsync),
             ("新关联条目只就绪存档而不自动写入", LinkThenManualRestoreAsync),
             ("待恢复区清理排除记录不影响存档与云端源包", ClearPendingExclusionAsync),
@@ -274,7 +275,7 @@ internal static class RestoreMatchingChecks
 
     private static async Task NativeLocalMergeAsync()
     {
-        var fixture = await MergeFixtureAsync();
+        var fixture = await MergeFixtureAsync(useDirectory: true);
         var merged = await SoftwareBackupCodec.MergeLocalGamesAsync(fixture.Current, fixture.Settings,
             [fixture.Removed, fixture.Kept, fixture.Other], Work());
         Check(merged.Conflicts.Count == 0, "有效显式合并不应报冲突。");
@@ -310,6 +311,34 @@ internal static class RestoreMatchingChecks
         Check(target["Comment"]!.ToString() == "云端评价", "已选评价没有应用。");
         foreach (var key in new[] { "Name", "ExePath", "DetectedSavePath", "LaunchArguments", "PlayCount" })
             Check(JsonNode.DeepEquals(target[key], fixture.KeptRaw[key]), "未选字段或本机配置被覆盖：" + key);
+    }
+
+    private static async Task RestoreFromDirectoryAsync()
+    {
+        var local = Game(directory: Work());
+        var cover = new JsonObject { ["Value"] = "./Images/local.png" };
+        var game = NativeGame(local, "本机评价");
+        game["ImagePath"] = cover.DeepClone();
+        var current = await NativeAsync([game], useDirectory: true);
+        string native = current.NativeDirectory!;
+        var pageSettings = new JsonObject { ["PrimarySortKey"] = 3, ["PrimarySortDescending"] = true };
+        await BackupFiles.WriteJsonAsync(Path.Combine(native, "data.pageSettings.json"), pageSettings);
+        Directory.CreateDirectory(Path.Combine(native, "Images"));
+        await File.WriteAllTextAsync(Path.Combine(native, "Images", "local.png"), "local-cover");
+        var package = await SoftwareBackupCodec.CreateAsync(await NativeAsync([NativeGame(local, "云端评价")]),
+            new() { Content = BackupContent.Reviews }, [local], Work());
+
+        var result = await SoftwareBackupCodec.MergeAsync(current, package.DataPath!, null, BackupContent.Reviews, new(), [local], Work());
+        Check(result.Conflicts.Count == 0, "目录底稿应能生成导入包。");
+        var restored = FindGame(ReadEntry(result.ArchivePath, "data.galgames.json").AsArray(), local.Id);
+        Check(restored["Comment"]?.ToString() == "云端评价" && JsonNode.DeepEquals(restored["ImagePath"], cover),
+            "恢复未应用已选评价或覆盖了本机封面。");
+        Check(JsonNode.DeepEquals(ReadEntry(result.ArchivePath, "data.pageSettings.json"), pageSettings) &&
+              ReadEntry(result.ArchivePath, "data.dataStatus.json")["ImportGalgame"]?.GetValue<bool>() == false,
+            "目录合并未保留页面设置和导入标记。");
+        using var zip = ZipFile.OpenRead(result.ArchivePath);
+        using var image = new StreamReader(zip.GetEntry("Images/local.png")!.Open());
+        Check(await image.ReadToEndAsync() == "local-cover", "导入包缺失未选封面的内容。");
     }
 
     private static async Task PendingExclusionAsync()
@@ -363,7 +392,7 @@ internal static class RestoreMatchingChecks
     }
 
     private static async Task<(HostExport Current, BackupSettings Settings, GameIdentity Removed, GameIdentity Kept,
-        GameIdentity Other, JsonObject KeptRaw, string Sentinel)> MergeFixtureAsync()
+        GameIdentity Other, JsonObject KeptRaw, string Sentinel)> MergeFixtureAsync(bool useDirectory = false)
     {
         var removed = Game(name: "重复资料", source: null); var kept = Game(name: "已安装资料", directory: Work(), source: null);
         var other = Game(name: "其他游戏", source: "v-other");
@@ -378,7 +407,7 @@ internal static class RestoreMatchingChecks
             ["Games"] = new JsonArray(Relation(removed.Id, "编剧"), Relation(kept.Id, "原画"), Relation(other.Id, "音乐")) });
         var home = new JsonArray(new JsonObject { ["_type"] = "GalgameManager.MultiStreamPage.Lists.GameListDbDto, GalgameManager",
             ["Name"] = "主页", ["GameIds"] = new JsonArray(GuidNode(removed.Id), GuidNode(kept.Id), GuidNode(other.Id)) });
-        var current = await NativeAsync([NativeGame(removed), keptRaw, NativeGame(other)], library, categories, staff, home);
+        var current = await NativeAsync([NativeGame(removed), keptRaw, NativeGame(other)], library, categories, staff, home, useDirectory);
         var settings = new BackupSettings { ActiveRestoreMatching = new RestoreMatchingDecisions {
             Targets = { [removed.Id] = kept.Id }, Merges = [new(removed.Id, kept.Id)] },
             LibraryMappings = [new() { Id = "pending", SourceJson = library[0]!.ToJsonString() }] };
@@ -400,7 +429,7 @@ internal static class RestoreMatchingChecks
     }
 
     private static async Task<HostExport> NativeAsync(IEnumerable<JsonObject> games, JsonArray? libraries = null,
-        JsonArray? categories = null, JsonArray? staff = null, JsonArray? home = null)
+        JsonArray? categories = null, JsonArray? staff = null, JsonArray? home = null, bool useDirectory = false)
     {
         var directory = Work(); var native = Path.Combine(directory, "native"); Directory.CreateDirectory(native);
         var documents = new Dictionary<string, JsonNode> {
@@ -413,6 +442,7 @@ internal static class RestoreMatchingChecks
             ["data.dataStatus.json"] = new JsonObject { ["ImportGalgame"] = false, ["GameLiteDbUpgrade"] = false }
         };
         foreach (var entry in documents) await File.WriteAllTextAsync(Path.Combine(native, entry.Key), entry.Value.ToJsonString());
+        if (useDirectory) return new HostExport { NativeDirectory = native };
         var archive = Path.Combine(directory, "native.zip"); await BackupFiles.ZipAsync(native, archive);
         return new HostExport { ArchivePath = archive, Settings = new() { ["language"] = JsonValue.Create("zh-CN") } };
     }

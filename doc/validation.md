@@ -16,6 +16,12 @@
 - HostInteropChecks 共 12 项通过。新增合成检查覆盖旧 MSIX 路径与中断重试、跨盘迁移、原生导入 ZIP 排除本插件状态和临时文件，以及替换 LocalState 后从 ImportBackup 接回状态。LocalWorkCleanupChecks 共 3 项通过，x64 Release 编译通过。
 - 真实商店版升级后的迁移、资源管理器打开和恢复重启仍待现场验收。
 
+## 云恢复的本机资料采集（2026-11-19）
+
+- 核对 v1.10.2.0 源码。宿主 ExportTask 等待 FileService 写入队列清空后立即压缩共享目录，而队列清空时写入线程可能还在处理 data.pageSettings.json 的临时文件。压缩一旦枚举到该文件，随后的原子改名就可能触发 FileNotFoundException。
+- 云备份插件复用直接采集，在每个任务独立目录保留原生导入标记、页面与主页配置及本机媒体，随后合并生成宿主导入包。旧版 ZIP 底稿仍可读取。
+- HostInteropChecks 13 项、RestoreMatchingChecks 32 项、核心回归 43 项通过。x64 Release 编译通过。使用合成数据验证，商店版实际云盘恢复及重启导入待现场验收。
+
 ## 宿主兼容处理
 
 源代码审查确认原生导出会遗漏已迁移至 LiteDB `homepage_list` 的布局，因此兼容层补充该数据，并在导入数据库中恢复。

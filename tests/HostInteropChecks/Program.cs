@@ -92,10 +92,21 @@ try
         Check(JsonNode.DeepEquals(before, JsonNode.Parse(values["nested"])), "导出或回滚读取破坏嵌套JObject/JArray");
         Check((await settings.ReadAsync("absent")) == null, "未配置设置应保持空值语义");
         Console.WriteLine("PASS host-context export and rollback capture preserve nested settings and unset values");
+        var largeValues = (Dictionary<string, string>)foreignSettings.GetType().GetProperty("LargeValues")!.GetValue(foreignSettings)!;
+        largeValues["customSortOrder"] = "[\"game-b\",\"game-a\"]";
+        values["primarySortKey"] = "3";
+        values["PrimarySortDescending"] = "true";
+        values["LibraryFolderSortKey"] = "1";
+        JsonObject page = await settings.ReadImportPageSettingsAsync(CancellationToken.None);
+        Check(page["PrimarySortKey"]?.GetValue<int>() == 3 && page["PrimarySortDescending"]?.GetValue<bool>() == true &&
+            page["LibraryFolderSortKey"]?.GetValue<int>() == 1 &&
+            JsonNode.DeepEquals(page["CustomSortOrder"], JsonNode.Parse(largeValues["customSortOrder"])),
+            "本机页面排序底稿应保留真实枚举、降序值和大设置中的自定义顺序。");
+        Console.WriteLine("PASS host-context import snapshot reads typed page settings and large custom order");
     }
     finally { jsonContext.Unload(); }
     CheckPluginStorage(root);
-    int checks = CheckCrossVolumePluginStorage(root) ? 12 : 11;
+    int checks = CheckCrossVolumePluginStorage(root) ? 13 : 12;
     Console.WriteLine($"PASS {checks} host interop checks; synthetic data only");
     return 0;
 }
@@ -222,10 +233,11 @@ public enum SyntheticLanguage { Auto, Chinese }
 public sealed class SyntheticHostSettings
 {
     public Dictionary<string, string> Values { get; } = new(StringComparer.Ordinal);
+    public Dictionary<string, string> LargeValues { get; } = new(StringComparer.Ordinal);
     public async Task<T?> ReadSettingAsync<T>(string key, bool isLarge = false, List<Newtonsoft.Json.JsonConverter>? converters = null, bool typeNameHandling = false)
     {
         await Task.CompletedTask;
-        return Values.TryGetValue(key, out string? raw) ? Newtonsoft.Json.JsonConvert.DeserializeObject<T>(raw) : default;
+        return (isLarge ? LargeValues : Values).TryGetValue(key, out string? raw) ? Newtonsoft.Json.JsonConvert.DeserializeObject<T>(raw) : default;
     }
     public Task SaveSettingAsync<T>(string key, T value, bool isLarge = false, bool triggerEventWhenNull = false,
         List<Newtonsoft.Json.JsonConverter>? converters = null, bool typeNameHandling = false)

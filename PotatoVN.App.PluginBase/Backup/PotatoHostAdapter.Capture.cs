@@ -16,7 +16,23 @@ namespace PotatoVN.App.PluginBase.Backup;
 
 public sealed partial class PotatoHostAdapter
 {
-    public async Task<HostExport> ExportForBackupAsync(string workDirectory, CancellationToken cancellationToken)
+    public Task<HostExport> ExportForBackupAsync(string workDirectory, CancellationToken cancellationToken) =>
+        CaptureAsync(workDirectory, forImport: false, cancellationToken);
+
+    public async Task<HostExport> ExportAsync(string workDirectory, CancellationToken cancellationToken)
+    {
+        HostExport export = await CaptureAsync(workDirectory, forImport: true, cancellationToken);
+        foreach (var (relative, source) in export.MediaPaths)
+            await CopySnapshotFileAsync(source, BackupFiles.Within(workDirectory, relative), cancellationToken);
+
+        const string oldHomeLayout = "data.multiStreamPageList.json";
+        string layout = Path.Combine(DataRoot, oldHomeLayout);
+        if (File.Exists(layout))
+            await CopySnapshotFileAsync(layout, Path.Combine(workDirectory, oldHomeLayout), cancellationToken);
+        return export;
+    }
+
+    private async Task<HostExport> CaptureAsync(string workDirectory, bool forImport, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         Directory.CreateDirectory(workDirectory);
@@ -37,13 +53,30 @@ public sealed partial class PotatoHostAdapter
         await groups;
         documents["data.categoryGroups.json"] = await OnMainAsync(() => writer.Serialize(groups.GetType().GetProperty("Result")!.GetValue(groups), gameConverter));
         documents["data.staff.json"] = await OnMainAsync(() => writer.Serialize(_api.GetStaffs()));
-        documents["data.homepage_list.json"] = await OnMainAsync(() =>
+        documents["data.homepage_list.json"] = await OnMainAsync<JsonNode?>(() =>
         {
             var database = new HostDatabaseReader(Property(_settings, "Database"));
-            if (!database.CollectionExists("homepage_list")) return (JsonNode)new JsonArray();
+            if (!database.CollectionExists("homepage_list")) return forImport ? null : new JsonArray();
             var array = new BsonArray(database.ReadDocuments("homepage_list").Select(document => (BsonValue)document));
             return JsonNode.Parse(LiteDB.JsonSerializer.Serialize(array))!;
         });
+        if (forImport)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Type statusType = _hostAssembly.GetType("GalgameManager.Models.LocalSettingStatus", true)!;
+            object? liveStatus = await _portableSettings.ReadValueAsync("dataStatus", statusType, isLarge: true);
+            object importStatus = liveStatus != null ? statusType.GetMethod("Clone")!.Invoke(liveStatus, null)! :
+                Activator.CreateInstance(statusType)!;
+            statusType.GetMethod("SetToExport")!.Invoke(importStatus, null);
+            documents["data.dataStatus.json"] = writer.Serialize(importStatus);
+
+            if (_hostAssembly.GetType("GalgameManager.Models.PageSettings") != null)
+                documents["data.pageSettings.json"] = await _portableSettings.ReadImportPageSettingsAsync(cancellationToken);
+            else
+                documents["data.customSortOrder.json"] = writer.Serialize(
+                    await _portableSettings.ReadValueAsync("customSortOrder", typeof(List<string>), isLarge: true));
+        }
+
         var export = new HostExport { NativeDirectory = workDirectory };
         foreach (var pair in documents)
         {
@@ -59,6 +92,15 @@ public sealed partial class PotatoHostAdapter
         }
         return export;
     }
+    private static async Task CopySnapshotFileAsync(string source, string target, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+        await using var input = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        await using var output = File.Create(target);
+        await input.CopyToAsync(output, ct);
+    }
+
     private void RewriteMediaPaths(JsonNode node, Dictionary<string, string> media, bool image = false)
     {
         if (node is JsonObject obj) foreach (var pair in obj.ToArray())

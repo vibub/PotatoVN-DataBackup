@@ -140,10 +140,10 @@ public static class SoftwareBackupCodec
         string workDirectory, CancellationToken ct = default, bool sameDevice = false)
     {
         var result = new SoftwareMergeResult();
-        var native = Path.Combine(workDirectory, "merged");
+        var native = current.NativeDirectory ?? Path.Combine(workDirectory, "merged");
         var portable = Path.Combine(workDirectory, "incoming");
         var media = Path.Combine(workDirectory, "incoming-media");
-        await BackupFiles.ExtractAsync(current.ArchivePath, native, ct);
+        if (current.NativeDirectory == null) await BackupFiles.ExtractAsync(current.ArchivePath, native, ct);
         await BackupFiles.ExtractAsync(dataZip, portable, ct);
         var package = await ReadNodeAsync(Path.Combine(portable, "package.json"), ct) as JsonObject
             ?? throw new InvalidDataException("软件备份缺少包信息。");
@@ -282,8 +282,8 @@ public static class SoftwareBackupCodec
             try { RestoreMatchingPreview.Validate(decisions, identities, localGames); }
             catch (InvalidOperationException ex) { result.Conflicts.Add(ex.Message); return result; }
         }
-        var native = Path.Combine(workDirectory, "merged-local");
-        await BackupFiles.ExtractAsync(current.ArchivePath, native, ct);
+        var native = current.NativeDirectory ?? Path.Combine(workDirectory, "merged-local");
+        if (current.NativeDirectory == null) await BackupFiles.ExtractAsync(current.ArchivePath, native, ct);
         var nativeGames = await ReadArrayAsync(Path.Combine(native, "data.galgames.json"), ct);
         await ApplyLocalMergesAsync(native, nativeGames, settings, ct);
         await WriteNodeAsync(Path.Combine(native, "data.galgames.json"), nativeGames, ct);
