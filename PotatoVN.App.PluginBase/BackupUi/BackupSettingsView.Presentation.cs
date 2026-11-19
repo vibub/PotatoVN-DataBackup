@@ -3,13 +3,52 @@ using System.Globalization;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Markup;
 using Microsoft.UI.Xaml.Media;
+using Windows.UI.ViewManagement;
 
 namespace PotatoVN.App.PluginBase.BackupUi;
 
 public sealed partial class BackupSettingsView
 {
     internal enum StatusTone { Neutral, Info, Success, Warning, Error }
+
+    private static Style? _surfaceStyle;
+    private static Style? _ruleStyle;
+    private static readonly AccessibilitySettings Accessibility = new();
+    private static readonly UISettings SystemAppearance = new();
+
+    private static Border SectionRule() => new()
+    {
+        Style = _ruleStyle ??= ReadBorderStyle("DividerStrokeColorDefaultBrush"),
+        Height = 1,
+        IsHitTestVisible = false
+    };
+
+    private static Border Surface(UIElement content) => new()
+    {
+        Child = content,
+        Style = _surfaceStyle ??= ReadBorderStyle("ControlFillColorSecondaryBrush"),
+        Padding = new Thickness(12),
+        CornerRadius = new CornerRadius(6)
+    };
+
+    private static Style ReadBorderStyle(string background) => (Style)XamlReader.Load(
+        "<Style xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/presentation\" TargetType=\"Border\">" +
+        $"<Setter Property=\"Background\" Value=\"{{ThemeResource {background}}}\" /></Style>");
+
+    private static TextBlock SectionHeading(string text) => new()
+    {
+        Text = text, FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap
+    };
+
+    private static void SetButtonStyle(Button button, string? key)
+    {
+        if (key != null && Application.Current.Resources.TryGetValue(key, out object? value) && value is Style style)
+            button.Style = style;
+        else
+            button.ClearValue(FrameworkElement.StyleProperty);
+    }
 
     internal static Border StatusBadge(string text, StatusTone tone = StatusTone.Neutral)
     {
@@ -18,6 +57,15 @@ public sealed partial class BackupSettingsView
             Padding = new Thickness(7, 3, 7, 3), HorizontalAlignment = HorizontalAlignment.Left };
         void ApplyTheme()
         {
+            if (Accessibility.HighContrast)
+            {
+                label.Foreground = new SolidColorBrush(SystemAppearance.UIElementColor(UIElementType.WindowText));
+                badge.Background = new SolidColorBrush(SystemAppearance.UIElementColor(UIElementType.Window));
+                badge.BorderBrush = label.Foreground;
+                badge.BorderThickness = new Thickness(1);
+                return;
+            }
+            badge.BorderThickness = new Thickness(0);
             bool dark = badge.ActualTheme == ElementTheme.Dark;
             (uint foreground, uint background) = (tone, dark) switch
             {
@@ -37,6 +85,7 @@ public sealed partial class BackupSettingsView
             label.Foreground = Brush(foreground);
             badge.Background = Brush(background);
         }
+        badge.Loaded += (_, _) => ApplyTheme();
         badge.ActualThemeChanged += (_, _) => ApplyTheme();
         ApplyTheme();
         AutomationProperties.SetName(badge, text);

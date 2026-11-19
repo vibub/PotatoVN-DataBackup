@@ -16,11 +16,12 @@ public sealed partial class BackupSettingsView : UserControl
 {
     private readonly IBackupUiController _controller;
     private readonly Func<IntPtr>? _getWindowHandle;
-    private readonly List<Control> _operationControls = new();
+    private readonly List<(Control Control, Func<bool>? CanExecute)> _operationControls = new();
     private readonly List<Control> _configurationTabs = new();
     private readonly TextBlock _status = Note("");
-    private readonly TextBlock _activeChannel = Note("");
-    private readonly TextBlock _saveState = Note("设置已保存");
+    private readonly TextBlock _activeChannel = SecondaryText("");
+    private readonly TextBlock _saveState = SecondaryText("有未保存的设置");
+    private readonly Button _backup;
     private readonly InfoBar _feedback = new() { IsClosable = true };
     private readonly DispatcherTimer _feedbackTimer = new() { Interval = TimeSpan.FromSeconds(4) };
     private readonly ProgressBar _progress = new() { IsIndeterminate = true, Visibility = Visibility.Collapsed };
@@ -39,7 +40,7 @@ public sealed partial class BackupSettingsView : UserControl
     private readonly TextBox _logText = new()
     {
         IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
-        Height = 120, FontSize = 12, Visibility = Visibility.Collapsed, Header = null, PlaceholderText = "操作结果和备份进度会显示在这里。"
+        Height = 112, MinHeight = 0, FontSize = 12, Visibility = Visibility.Collapsed, PlaceholderText = "操作结果和备份进度会显示在这里。"
     };
     private CancellationTokenSource? _operationCts;
     private FrameworkElement? _viewportHost;
@@ -57,15 +58,15 @@ public sealed partial class BackupSettingsView : UserControl
     {
         _controller = controller;
         _getWindowHandle = getWindowHandle;
-        var root = new Grid { Padding = new Thickness(16), RowSpacing = 10, MaxWidth = 1040, HorizontalAlignment = HorizontalAlignment.Stretch };
+        var root = new Grid { Padding = new Thickness(16, 8, 16, 12), RowSpacing = 6, MaxWidth = 1040, HorizontalAlignment = HorizontalAlignment.Stretch };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        var heading = Stack(4);
-        heading.Children.Add(Heading("云备份", "SubtitleTextBlockStyle"));
-        heading.Children.Add(_activeChannel);
-        root.Children.Add(heading);
+        _activeChannel.MaxLines = 1;
+        _activeChannel.TextTrimming = TextTrimming.CharacterEllipsis;
+        root.Children.Add(_activeChannel);
+        root.SizeChanged += (_, args) => _logText.Height = Math.Clamp(args.NewSize.Height * .24, 48, 112);
 
         AutomationProperties.SetName(_navigation, "设置页面");
         AutomationProperties.SetName(_pageScroll, "设置内容");
@@ -78,6 +79,11 @@ public sealed partial class BackupSettingsView : UserControl
         AddPage("恢复备份", BuildHistoryTab());
         AddPage("待恢复存档", BuildPendingTab());
         AddPage("游戏库关联", BuildLibraryTab(), true);
+        _backup = ActionButton("立即备份", async ct =>
+        {
+            await SaveAllSettingsAsync();
+            await _controller.BackupAsync(ct);
+        });
         _navigation.SelectionChanged += (_, _) =>
         {
             int index = _navigation.SelectedIndex;
@@ -85,6 +91,7 @@ public sealed partial class BackupSettingsView : UserControl
             {
                 _pageScroll.Content = _pages[index];
                 _pageScroll.ChangeView(null, 0, null, true);
+                SetButtonStyle(_backup, index is 1 or 2 ? "AccentButtonStyle" : null);
                 RefreshLibraryView();
                 UpdateFeedbackVisibility();
             }
@@ -95,22 +102,18 @@ public sealed partial class BackupSettingsView : UserControl
         root.Children.Add(_pageScroll);
 
         var footer = Stack(6);
+        footer.Children.Add(SectionRule());
         footer.Children.Add(_progress);
         footer.Children.Add(_status);
         footer.Children.Add(_feedback);
         footer.Children.Add(_logText);
         var actions = Row();
         actions.Children.Add(ActionButton("保存设置", async _ => await SaveAllSettingsAsync(), successMessage: "设置已保存。"));
-        Button backup = ActionButton("立即备份", async ct =>
-        {
-            await SaveAllSettingsAsync();
-            await _controller.BackupAsync(ct);
-        });
-        if (Application.Current.Resources.TryGetValue("AccentButtonStyle", out object? accent) && accent is Style style) backup.Style = style;
-        actions.Children.Add(backup);
+        actions.Children.Add(_backup);
         _cancel.Click += (_, _) => { _operationCts?.Cancel(); _controller.CancelCurrentOperation(); };
         actions.Children.Add(_cancel);
         var logToggle = new Button { Content = "查看日志" };
+        SetButtonStyle(logToggle, "SubtleButtonStyle");
         logToggle.Click += (_, _) =>
         {
             bool opening = _logText.Visibility != Visibility.Visible;
@@ -144,7 +147,7 @@ public sealed partial class BackupSettingsView : UserControl
         panel.HorizontalAlignment = HorizontalAlignment.Stretch;
         _navigation.Items.Add(new PivotItem
         {
-            Header = new TextBlock { Text = title, FontSize = 16 },
+            Header = new TextBlock { Text = title, FontSize = 14 },
             Tag = _pages.Count
         });
         _pages.Add(panel);
@@ -207,7 +210,7 @@ public sealed partial class BackupSettingsView : UserControl
         _progress.Value = _controller.BackupProgressPercent ?? 0;
         _cancel.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         _cancel.IsEnabled = _operationCts is { IsCancellationRequested: false } || _controller.IsBusy;
-        foreach (Control control in _operationControls) control.IsEnabled = !busy;
+        RefreshOperationControls();
         foreach (Control control in _configurationTabs) control.IsEnabled = !busy;
         _status.Text = _controller.Status;
         _status.MaxLines = 2;
@@ -222,7 +225,9 @@ public sealed partial class BackupSettingsView : UserControl
         }
         ProviderProfile? active = _controller.Settings.Profiles.FirstOrDefault(p => p.Id == _controller.Settings.ActiveProfileId);
         _activeChannel.Text = active == null ? "尚未连接云盘" : $"当前云盘：{active.Name} · {ProviderLabel(active.Kind)}";
-        _saveState.Text = (_settingsDirty || _profileDirty) ? "有未保存的修改" : "设置已保存";
+        ToolTipService.SetToolTip(_activeChannel, _activeChannel.Text);
+        _lastSuccessfulBackup.Text = _controller.Settings.LastSuccessfulBackupUtc is { } time
+            ? $"最近成功备份：{time.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : "尚未完成备份。";
         _saveState.Visibility = (_settingsDirty || _profileDirty) ? Visibility.Visible : Visibility.Collapsed;
         UpdateFeedbackVisibility();
     }
@@ -232,7 +237,7 @@ public sealed partial class BackupSettingsView : UserControl
         bool feedbackVisible = _feedback.IsOpen && _feedbackPageIndex == _navigation.SelectedIndex;
         _feedback.Visibility = feedbackVisible ? Visibility.Visible : Visibility.Collapsed;
         bool statusVisible = _hasStatus && !string.IsNullOrWhiteSpace(_status.Text) && !feedbackVisible &&
-            (_controller.IsBusy || _statusPageIndex == null || _statusPageIndex == _navigation.SelectedIndex);
+            (_operationCts != null || _controller.IsBusy || _statusPageIndex == null || _statusPageIndex == _navigation.SelectedIndex);
         _status.Visibility = statusVisible ? Visibility.Visible : Visibility.Collapsed;
     }
 
@@ -315,11 +320,20 @@ public sealed partial class BackupSettingsView : UserControl
         if (severity is InfoBarSeverity.Success or InfoBarSeverity.Informational) _feedbackTimer.Start();
     }
 
-    private Button ActionButton(string text, Func<CancellationToken, Task> action, bool trackBusy = true, string? successMessage = null)
+    private void RefreshOperationControls()
+    {
+        bool idle = _operationCts == null && !_controller.IsBusy;
+        foreach (var (control, canExecute) in _operationControls)
+            control.IsEnabled = idle && (canExecute?.Invoke() ?? true);
+    }
+
+    private Button ActionButton(string text, Func<CancellationToken, Task> action, bool trackBusy = true,
+        string? successMessage = null, Func<bool>? canExecute = null, string? style = null)
     {
         var button = new Button { Content = text };
+        SetButtonStyle(button, style);
         button.Click += async (_, _) => await RunAsync(action, showSuccess: successMessage != null, successMessage: successMessage);
-        if (trackBusy) _operationControls.Add(button);
+        if (trackBusy) _operationControls.Add((button, canExecute));
         return button;
     }
 

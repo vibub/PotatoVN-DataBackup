@@ -20,6 +20,13 @@ public sealed partial class BackupSettingsView
     private readonly CheckBox _cloudOnlySaves = new() { Content = "含存档" };
     private readonly CheckBox _cloudOnlyUnmatched = new() { Content = "未匹配" };
     private readonly TextBlock _mappingPreview = Note("");
+    private readonly Expander _gameMappingExpander = new()
+    {
+        Header = "手动设置游戏对应关系",
+        HorizontalAlignment = HorizontalAlignment.Stretch,
+        HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        Visibility = Visibility.Collapsed
+    };
     private readonly TextBlock _snapshotNotices = Note("");
     private readonly Expander _snapshotNoticeExpander = new() { Header = "备份提示", HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
     private readonly GameSearchPicker _mapLocalGame = new("本机游戏");
@@ -32,9 +39,9 @@ public sealed partial class BackupSettingsView
     private StackPanel BuildHistoryTab()
     {
         var panel = Stack();
-        panel.Children.Add(Heading("从云端恢复"));
-        panel.Children.Add(Note("软件资料恢复需要重启；存档下载后在“待恢复存档”确认写入。"));
-        panel.Children.Add(ActionButton("读取云端备份", async ct =>
+        panel.Children.Add(SectionHeading("从云端恢复"));
+        panel.Children.Add(SecondaryText("软件资料需重启 PotatoVN 后导入。存档下载后，在“待恢复存档”确认写入位置。"));
+        Button readHistory = ActionButton("读取云端备份", async ct =>
         {
             if (_controller.Settings.ActiveProfileId == null) throw new InvalidOperationException("请先在“连接云盘”中添加并保存云盘账号。");
             IReadOnlyList<SnapshotManifest> snapshots = await _controller.ListSnapshotsAsync(ct);
@@ -49,18 +56,24 @@ public sealed partial class BackupSettingsView
                 _snapshotNoticeExpander.Visibility = Visibility.Collapsed;
                 RefreshGameMappingChoices();
             }
-        }));
-        panel.Children.Add(_snapshotList);
-        panel.Children.Add(_snapshotDetails);
+        }, style: "AccentButtonStyle");
+        panel.Children.Add(readHistory);
+        var versions = Stack(8);
+        versions.Children.Add(SectionHeading("备份版本"));
+        versions.Children.Add(_snapshotList);
+        var details = Stack(8);
+        details.Children.Add(SectionHeading("版本内容"));
+        details.Children.Add(_snapshotDetails);
         _snapshotNoticeExpander.Content = new ScrollViewer { Content = _snapshotNotices, MaxHeight = 160 };
         _snapshotNoticeExpander.Visibility = Visibility.Collapsed;
-        panel.Children.Add(_snapshotNoticeExpander);
-        Button restore = ActionButton("选择内容并恢复…", RestoreSelectedSnapshotAsync, successMessage: "所选内容已处理。");
-        restore.Visibility = Visibility.Collapsed;
-        panel.Children.Add(restore);
+        details.Children.Add(_snapshotNoticeExpander);
+        Button restore = ActionButton("选择内容并恢复…", RestoreSelectedSnapshotAsync, successMessage: "所选内容已处理。",
+            canExecute: () => _snapshotList.SelectedItem is SnapshotChoice, style: "AccentButtonStyle");
+        details.Children.Add(restore);
+        panel.Children.Add(ResponsiveColumns(Surface(versions), Surface(details), new GridLength(2, GridUnitType.Star)));
 
         var mapping = Stack();
-        mapping.Children.Add(Note("先选左侧云端游戏，再选右侧本机游戏，保存对应关系。"));
+        mapping.Children.Add(SecondaryText("先选云端游戏，再选要对应的本机游戏，然后保存。"));
         _mapBackupGame.Filters.Children.Add(_cloudOnlySaves);
         _mapBackupGame.Filters.Children.Add(_cloudOnlyUnmatched);
         _mapBackupGame.Filters.MinHeight = _mapLocalGame.Filters.MinHeight = 36;
@@ -100,11 +113,16 @@ public sealed partial class BackupSettingsView
         }, successMessage: "已改为自动识别。"));
         mappingActions.Children.Add(ActionButton("刷新本机游戏", _ => { RefreshGameMappingChoices(); return Task.CompletedTask; }));
         mapping.Children.Add(mappingActions);
-        panel.Children.Add(Heading("游戏与存档"));
-        panel.Children.Add(mapping);
+        _gameMappingExpander.Content = mapping;
+        panel.Children.Add(_gameMappingExpander);
         _snapshotList.SelectionChanged += (_, _) =>
         {
-            restore.Visibility = _snapshotList.SelectedItem is SnapshotChoice ? Visibility.Visible : Visibility.Collapsed;
+            bool hasVersion = _snapshotList.SelectedItem is SnapshotChoice;
+            _gameMappingExpander.Visibility = hasVersion ? Visibility.Visible : Visibility.Collapsed;
+            if (!hasVersion) _gameMappingExpander.IsExpanded = false;
+            SetButtonStyle(readHistory, hasVersion ? null : "AccentButtonStyle");
+            SetButtonStyle(restore, hasVersion ? "AccentButtonStyle" : null);
+            RefreshOperationControls();
             if (_snapshotList.SelectedItem is SnapshotChoice row)
             {
                 SnapshotManifest snapshot = row.Snapshot;
@@ -207,10 +225,9 @@ public sealed partial class BackupSettingsView
     private StackPanel BuildLibraryTab()
     {
         var panel = Stack();
-        panel.Children.Add(Heading("关联这台电脑的游戏库"));
-        panel.Children.Add(Note("选择本机游戏库，或指定对应的文件夹。"));
+        panel.Children.Add(SectionHeading("关联这台电脑的游戏库"));
+        panel.Children.Add(ActionButton("刷新游戏库列表", _ => { RefreshLibraryView(); return Task.CompletedTask; }, style: "SubtleButtonStyle"));
         panel.Children.Add(_libraryRows);
-        panel.Children.Add(ActionButton("刷新游戏库列表", _ => { RefreshLibraryView(); return Task.CompletedTask; }));
         return panel;
     }
 
@@ -245,11 +262,13 @@ public sealed partial class BackupSettingsView
             target.IsEnabled = enabled;
             var picker = new ComboBox
             {
-                Header = "本机游戏库", PlaceholderText = choices.Length == 0 ? "暂无可用游戏库" : "选择现有游戏库",
+                Header = "选择现有游戏库", PlaceholderText = choices.Length == 0 ? "暂无可用游戏库" : "选择现有游戏库",
                 ItemsSource = choices, IsEnabled = enabled && choices.Length > 0,
                 HorizontalAlignment = HorizontalAlignment.Stretch,
                 SelectedItem = choices.FirstOrDefault(library => library.Id == draftLibraryId)
             };
+            var apply = new Button { Content = "确认并关联此游戏库…" };
+            apply.IsEnabled = enabled && kind != null && !string.IsNullOrWhiteSpace(target.Text);
             picker.SelectionChanged += (_, _) =>
             {
                 if (picker.SelectedItem is not LocalLibrary library) return;
@@ -265,14 +284,16 @@ public sealed partial class BackupSettingsView
                     library = null;
                 }
                 _libraryTargetDrafts[mapping.Id] = (target.Text, library?.Id);
+                apply.IsEnabled = enabled && kind != null && !string.IsNullOrWhiteSpace(target.Text);
             };
-            group.Children.Add(picker);
-            group.Children.Add(target);
-            var actions = Row();
+            var folder = Stack(6);
+            target.Header = "或指定本机文件夹";
+            folder.Children.Add(target);
             Button browse = BrowsePathButton(target);
             browse.IsEnabled = enabled;
-            actions.Children.Add(browse);
-            var apply = new Button { Content = "确认并关联此游戏库…", IsEnabled = enabled && kind != null };
+            folder.Children.Add(browse);
+            group.Children.Add(ResponsiveColumns(picker, folder));
+            var actions = Row();
             apply.Click += async (_, _) => await RunAsync(async ct =>
             {
                 var library = picker.SelectedItem as LocalLibrary;
@@ -288,8 +309,11 @@ public sealed partial class BackupSettingsView
                 ShowMessage(_controller.Status, InfoBarSeverity.Success);
             }, showSuccess: false);
             actions.Children.Add(apply);
+            var timing = SecondaryText("确认后立即生效");
+            timing.VerticalAlignment = VerticalAlignment.Center;
+            actions.Children.Add(timing);
             group.Children.Add(actions);
-            _libraryRows.Children.Add(group);
+            _libraryRows.Children.Add(Surface(group));
         }
     }
 

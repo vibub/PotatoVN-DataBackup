@@ -29,6 +29,7 @@ public sealed partial class BackupSettingsView
     private StackPanel _oauthFields = null!;
     private StackPanel _googleFields = null!;
     private Button _authorizeChannel = null!;
+    private Button _testChannel = null!;
     private Button _deleteChannel = null!;
     private ProviderProfile? _editingProfile;
     private bool _profileDirty;
@@ -36,15 +37,18 @@ public sealed partial class BackupSettingsView
     private StackPanel BuildProfilesTab()
     {
         var panel = Stack();
-        panel.Children.Add(Heading("连接云盘"));
-        panel.Children.Add(_profilePick);
-        var profileActions = Row();
-        profileActions.Children.Add(ActionButton("添加其他渠道", async _ =>
+        panel.Children.Add(SectionHeading("连接云盘"));
+        var addChannel = ActionButton("添加渠道", async _ =>
         {
             if (!await ConfirmLeavingProfileAsync()) return;
             _editingProfile = new ProviderProfile();
             RefreshProfiles(_editingProfile.Id);
-        }));
+        });
+        addChannel.VerticalAlignment = VerticalAlignment.Bottom;
+        var channels = Stack(8);
+        channels.Children.Add(_profilePick);
+        channels.Children.Add(addChannel);
+        panel.Children.Add(Surface(channels));
         _deleteChannel = ActionButton("删除此渠道", async _ =>
         {
             ProviderProfile profile = RequireProfile();
@@ -64,25 +68,25 @@ public sealed partial class BackupSettingsView
             ClearChannelHistory();
             RefreshProfiles(_controller.Settings.ActiveProfileId);
         }, successMessage: "已删除本机渠道配置，云端备份保留。" );
-        profileActions.Children.Add(_deleteChannel);
-
+        var form = Stack(12);
+        form.Children.Add(SectionHeading("连接信息"));
         AddChoice(_providerKind, ProviderKind.WebDav, "WebDAV（坚果云、NAS 等）");
         AddChoice(_providerKind, ProviderKind.OneDrive, "OneDrive（微软云盘）");
         AddChoice(_providerKind, ProviderKind.GoogleDrive, "Google Drive（谷歌云盘）");
-        panel.Children.Add(_providerKind);
+        form.Children.Add(_providerKind);
         _webDavFields = Stack();
         foreach (UIElement field in new UIElement[] { _endpoint, _username, _password }) _webDavFields.Children.Add(field);
         _webDavFields.Children.Add(Note("坚果云等服务需使用应用专用密码。"));
-        panel.Children.Add(_webDavFields);
+        form.Children.Add(_webDavFields);
         _oauthFields = Stack();
         _oauthFields.Children.Add(Note("填写 Microsoft Entra 桌面应用的客户端 ID，登录时会打开浏览器。"));
         _oauthFields.Children.Add(_clientId);
-        panel.Children.Add(_oauthFields);
+        form.Children.Add(_oauthFields);
         _googleFields = Stack();
         _googleFields.Children.Add(Note("在 Google Cloud 创建 OAuth 桌面应用，下载并粘贴 JSON 配置。"));
         _googleFields.Children.Add(_googleConfigured);
         _googleFields.Children.Add(_googleJson);
-        panel.Children.Add(_googleFields);
+        form.Children.Add(_googleFields);
 
         var connectionActions = Row();
         _authorizeChannel = ActionButton("登录云盘并测试", async ct =>
@@ -91,21 +95,25 @@ public sealed partial class BackupSettingsView
             ProviderProfile profile = RequireProfile();
             await _controller.AuthorizeAsync(profile.Id, ct);
             await _controller.ProbeAsync(profile.Id, ct);
-        }, successMessage: "登录成功，连接测试通过。" );
+        }, successMessage: "登录成功，连接测试通过。", style: "AccentButtonStyle");
         connectionActions.Children.Add(_authorizeChannel);
-        connectionActions.Children.Add(ActionButton("保存并测试连接", async ct =>
+        _testChannel = ActionButton("保存并测试连接", async ct =>
         {
             await SaveProfileFieldsAsync();
             await _controller.ProbeAsync(RequireProfile().Id, ct);
-        }, successMessage: "连接测试通过。" ));
-        panel.Children.Add(connectionActions);
+        }, successMessage: "连接测试通过。");
+        connectionActions.Children.Add(_testChannel);
+        form.Children.Add(connectionActions);
+        panel.Children.Add(Surface(form));
 
         var advanced = Stack();
-        advanced.Children.Add(profileActions);
         advanced.Children.Add(_profileName);
         advanced.Children.Add(_tenant);
         advanced.Children.Add(_repositoryNote);
-        advanced.Children.Add(ActionButton("打开本机数据目录", async _ => await _controller.OpenDataFolderAsync(), trackBusy: false));
+        var maintenance = Row();
+        maintenance.Children.Add(ActionButton("打开本机数据目录", async _ => await _controller.OpenDataFolderAsync(), trackBusy: false));
+        maintenance.Children.Add(_deleteChannel);
+        advanced.Children.Add(maintenance);
         panel.Children.Add(new Expander { Header = "更多选项", Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         _profilePick.SelectionChanged += async (_, _) =>
         {
@@ -214,6 +222,7 @@ public sealed partial class BackupSettingsView
         _googleFields.Visibility = kind == ProviderKind.GoogleDrive ? Visibility.Visible : Visibility.Collapsed;
         _tenant.Visibility = kind == ProviderKind.OneDrive ? Visibility.Visible : Visibility.Collapsed;
         _authorizeChannel.Visibility = kind == ProviderKind.WebDav ? Visibility.Collapsed : Visibility.Visible;
+        SetButtonStyle(_testChannel, kind == ProviderKind.WebDav ? "AccentButtonStyle" : null);
     }
 
     private ProviderProfile RequireProfile() => _editingProfile ?? throw new InvalidOperationException("请先填写云盘连接信息。");

@@ -14,7 +14,8 @@ namespace PotatoVN.App.PluginBase.BackupUi;
 public sealed partial class BackupSettingsView
 {
     private readonly TextBlock _pendingSummary = Note("");
-    private readonly TextBlock _pendingSelection = Note("");
+    private readonly TextBlock _pendingSelection = SectionHeading("");
+    private readonly TextBlock _pendingRestoreHint = SecondaryText("");
     private readonly TextBlock _pendingEmpty = Note("");
     private readonly StackPanel _pendingGameFilters = Stack(0);
     private readonly StackPanel _pendingVersionFilters = Stack(0);
@@ -23,16 +24,23 @@ public sealed partial class BackupSettingsView
     private readonly ListView _pendingList = new()
     {
         SelectionMode = ListViewSelectionMode.Multiple,
+        IsMultiSelectCheckBoxEnabled = true,
         HorizontalContentAlignment = HorizontalAlignment.Stretch,
         MaxHeight = 440
     };
     private bool _buildingPendingFilters;
+    private string? _pendingRestoreBlocker;
 
     private StackPanel BuildPendingTab()
     {
         var panel = Stack();
-        panel.Children.Add(Heading("待恢复存档"));
-        panel.Children.Add(_pendingSummary);
+        panel.Children.Add(SectionHeading("待恢复存档"));
+        var toolbar = Row();
+        _pendingSummary.VerticalAlignment = VerticalAlignment.Center;
+        toolbar.Children.Add(_pendingSummary);
+        toolbar.Children.Add(ActionButton("刷新状态", async ct => await _controller.RefreshPendingAsync(ct),
+            successMessage: "待恢复存档已刷新。", style: "SubtleButtonStyle"));
+        panel.Children.Add(toolbar);
         panel.Children.Add(_pendingSearch);
         var statusFilters = Row();
         foreach (RestoreStatus status in Enum.GetValues<RestoreStatus>())
@@ -42,30 +50,26 @@ public sealed partial class BackupSettingsView
             statusFilters.Children.Add(check);
         }
         panel.Children.Add(statusFilters);
-        panel.Children.Add(PendingFilterGroup("按游戏筛选", _pendingGameFilters));
-        panel.Children.Add(PendingFilterGroup("按备份版本筛选", _pendingVersionFilters));
+        panel.Children.Add(ResponsiveColumns(PendingFilterGroup("按游戏筛选", _pendingGameFilters),
+            PendingFilterGroup("按备份版本筛选", _pendingVersionFilters)));
         var results = Stack(8);
         results.Children.Add(_pendingList);
         results.Children.Add(_pendingEmpty);
         var sidebar = Stack(8);
-        sidebar.VerticalAlignment = VerticalAlignment.Top;
         sidebar.Children.Add(_pendingSelection);
+        sidebar.Children.Add(_pendingRestoreHint);
         var actions = Row();
         sidebar.Children.Add(actions);
-        actions.Children.Add(ActionButton("刷新状态", async ct => await _controller.RefreshPendingAsync(ct), successMessage: "待恢复存档已刷新。"));
-        actions.Children.Add(ActionButton("全选筛选结果", _ => { _pendingList.SelectAll(); return Task.CompletedTask; }));
-        actions.Children.Add(ActionButton("取消选择", _ => { _pendingList.SelectedItems.Clear(); return Task.CompletedTask; }));
-        actions.Children.Add(ActionButton("设置所选目标…", async ct => await ConfigurePendingTargetAsync(ct), successMessage: "恢复位置已保存。"));
+        actions.Children.Add(ActionButton("设置所选目标…", async ct => await ConfigurePendingTargetAsync(ct), successMessage: "恢复位置已保存。",
+            canExecute: () => _pendingList.SelectedItems.Count == 1 && ((PendingRestore)((ListViewItem)_pendingList.SelectedItems[0]).Tag).IsBusy == false));
         actions.Children.Add(ActionButton("恢复所选存档", async ct =>
         {
             Guid[] ids = SelectedPendingIds();
             if (ids.Length == 0) throw new InvalidOperationException("请先选择要恢复的存档位置。");
             await _controller.RefreshPendingAsync(ct);
             PendingRestore[] entries = _controller.GetPending().Where(p => ids.Contains(p.Id)).ToArray();
-            if (entries.Any(p => p.Status is RestoreStatus.PendingLink or RestoreStatus.PendingPath || string.IsNullOrWhiteSpace(p.TargetPath)))
-                throw new InvalidOperationException("所选项目仍需关联有效本地游戏或指定目标位置，请先点击“设置所选目标”。");
-            if (entries.GroupBy(p => Path.GetFullPath(p.TargetPath!), StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
-                throw new InvalidOperationException("同一目标位置选中了多个存档版本。请先用“备份版本”筛选，或只选中希望恢复的那个版本。");
+            if (entries.Length != ids.Length) throw new InvalidOperationException("所选存档已变化，请重新选择。");
+            if (PendingRestoreBlocker(entries) is { } blocker) throw new InvalidOperationException(blocker);
             var body = Stack(8);
             body.Children.Add(Note("内容相同的存档会跳过；内容不同时，用所选版本替换目标位置。恢复前会保存当前存档，写入失败时回滚。"));
             foreach (PendingRestore entry in entries)
@@ -73,8 +77,16 @@ public sealed partial class BackupSettingsView
             if (await DialogAsync("确认存档恢复位置", new ScrollViewer { Content = body, MaxHeight = 440 }, "恢复所选存档") != ContentDialogResult.Primary)
                 return;
             await _controller.RestorePendingAsync(ids, ct);
-        }));
-        panel.Children.Add(ResponsiveColumns(sidebar, results, new GridLength(168)));
+        }, canExecute: () => _pendingRestoreBlocker == null && _pendingList.SelectedItems.Count > 0, style: "AccentButtonStyle"));
+        var selectionActions = Row();
+        selectionActions.Children.Add(ActionButton("全选筛选结果", _ => { _pendingList.SelectAll(); return Task.CompletedTask; },
+            canExecute: () => _pendingList.Items.Count > 0, style: "SubtleButtonStyle"));
+        selectionActions.Children.Add(ActionButton("取消选择", _ => { _pendingList.SelectedItems.Clear(); return Task.CompletedTask; },
+            canExecute: () => _pendingList.SelectedItems.Count > 0, style: "SubtleButtonStyle"));
+        sidebar.Children.Add(selectionActions);
+        Border selectionPanel = Surface(sidebar);
+        selectionPanel.VerticalAlignment = VerticalAlignment.Top;
+        panel.Children.Add(ResponsiveColumns(selectionPanel, results, new GridLength(180)));
         var cleanup = Stack(8);
         cleanup.Children.Add(Note("仅清理本机暂存副本，云端备份和游戏存档会保留。"));
         var cleanupActions = Row();
@@ -152,8 +164,6 @@ public sealed partial class BackupSettingsView
             if (!string.IsNullOrWhiteSpace(version?.DeviceName)) label += " · " + version.DeviceName;
             return (group.Key, $"{label} · {entry.ProfileName} · {games} 个游戏");
         }));
-        _buildingPendingFilters = false;
-
         HashSet<Guid> selected = SelectedPendingIds().ToHashSet();
         _pendingList.Items.Clear();
         HashSet<string> games = CheckedPendingFilters(_pendingGameFilters.Children.OfType<CheckBox>());
@@ -201,6 +211,7 @@ public sealed partial class BackupSettingsView
             _pendingList.Items.Add(item);
             if (selected.Contains(entry.Id)) _pendingList.SelectedItems.Add(item);
         }
+        _buildingPendingFilters = false;
         _pendingEmpty.Visibility = _pendingList.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         _pendingEmpty.Text = entries.Count == 0
             ? "暂无待恢复存档。"
@@ -208,8 +219,37 @@ public sealed partial class BackupSettingsView
         UpdatePendingSelection();
     }
 
-    private void UpdatePendingSelection() =>
-        _pendingSelection.Text = $"显示 {_pendingList.Items.Count} 个存档位置 · 已选 {_pendingList.SelectedItems.Count} 项";
+    private void UpdatePendingSelection()
+    {
+        if (_buildingPendingFilters) return;
+        PendingRestore[] selected = _pendingList.SelectedItems.OfType<ListViewItem>()
+            .Select(item => (PendingRestore)item.Tag).ToArray();
+        _pendingSelection.Text = $"已选 {selected.Length} 项 · 显示 {_pendingList.Items.Count} 项";
+        _pendingRestoreBlocker = PendingRestoreBlocker(selected);
+        _pendingRestoreHint.Text = selected.Length == 0
+            ? "选择一项可设置目标。"
+            : _pendingRestoreBlocker ?? "已选存档可以恢复。";
+        RefreshOperationControls();
+    }
+
+    private static string? PendingRestoreBlocker(IReadOnlyList<PendingRestore> entries)
+    {
+        if (entries.Any(entry => entry.IsBusy)) return "所选存档正在使用，请等当前操作完成。";
+        if (entries.Any(entry => entry.Status is RestoreStatus.PendingLink or RestoreStatus.PendingPath ||
+            !Path.IsPathFullyQualified(entry.TargetPath ?? "")))
+            return "请逐项选择缺少目标的存档，再点击“设置所选目标”。";
+
+        try
+        {
+            if (entries.GroupBy(entry => Path.GetFullPath(entry.TargetPath!), StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1))
+                return "同一目标选了多个版本，请只保留想恢复的版本。";
+        }
+        catch (ArgumentException)
+        {
+            return "所选存档的目标路径无效，请重新设置。";
+        }
+        return null;
+    }
 
     private Guid[] SelectedPendingIds() => _pendingList.SelectedItems.OfType<ListViewItem>()
         .Select(item => ((PendingRestore)item.Tag).Id).ToArray();

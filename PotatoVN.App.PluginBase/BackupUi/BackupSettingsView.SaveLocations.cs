@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -19,7 +20,9 @@ public sealed partial class BackupSettingsView
     private readonly CheckBox _saveGameConfigured = new() { Content = "已配置存档" };
     private readonly CheckBox _saveGameUnconfigured = new() { Content = "未配置存档" };
     private readonly CheckBox _saveGameLocal = new() { Content = "本机目录有效" };
-    private readonly TextBlock _saveGameCount = Note("");
+    private readonly TextBlock _saveLocationHeading = SectionHeading("各游戏存档位置");
+    private readonly TextBlock _saveGameCount = SecondaryText("");
+    private readonly TextBlock _saveGameHidden = SecondaryText("当前配置的游戏不在筛选结果中。");
     private readonly TextBlock _saveGameEmpty = Note("");
     private readonly TextBlock _saveGameTitle = Heading("", "BodyStrongTextBlockStyle");
     private readonly StackPanel _saveGameDetails = Stack();
@@ -75,24 +78,41 @@ public sealed partial class BackupSettingsView
         var identity = Stack(10);
         identity.Children.Add(_saveGameTitle);
         identity.Children.Add(_saveGameBadges);
+        identity.Children.Add(_saveGameHidden);
         Grid.SetColumn(identity, 1);
         header.Children.Add(identity);
         panel.Children.Add(header);
-        panel.Children.Add(_saveLocationHint);
-        panel.Children.Add(_saveRoots);
-        panel.Children.Add(_saveSuggestions);
-        panel.Children.Add(ActionButton("重新检查存档位置", _ => { _coverGameId = null; RefreshSaveLocations(); return Task.CompletedTask; }));
-        var addActions = Row();
-        addActions.Children.Add(ActionButton("选择存档文件夹…", async _ => await AddPickedSaveLocationAsync(false), successMessage: "存档位置已保存。"));
-        addActions.Children.Add(ActionButton("选择存档文件…", async _ => await AddPickedSaveLocationAsync(true), successMessage: "存档位置已保存。"));
-        addActions.Children.Add(ActionButton("手动填写位置…", async _ => await EditSaveLocationAsync(null), successMessage: "存档位置已保存。"));
-        panel.Children.Add(addActions);
+        var locations = Stack(8);
+        locations.Children.Add(SectionHeading("存档位置"));
+        var locationActions = Row();
+        var addMenu = new MenuFlyout();
+        void AddChoice(string label, Func<Task> add)
+        {
+            var item = new MenuFlyoutItem { Text = label };
+            item.Click += async (_, _) => await RunAsync(_ => add(), successMessage: "存档位置已保存。");
+            addMenu.Items.Add(item);
+        }
+        AddChoice("选择存档文件夹…", () => AddPickedSaveLocationAsync(false));
+        AddChoice("选择存档文件…", () => AddPickedSaveLocationAsync(true));
+        AddChoice("手动填写位置…", () => EditSaveLocationAsync(null));
+        var addLocation = new DropDownButton { Content = "添加存档位置", Flyout = addMenu };
+        _operationControls.Add((addLocation, () => _saveGameId != null));
+        locationActions.Children.Add(addLocation);
+        locationActions.Children.Add(ActionButton("重新检查存档位置", _ =>
+        {
+            _coverGameId = null;
+            RefreshSaveLocations();
+            return Task.CompletedTask;
+        }, style: "SubtleButtonStyle"));
+        locations.Children.Add(locationActions);
+        locations.Children.Add(_saveLocationHint);
+        locations.Children.Add(_saveRoots);
         var actions = Row();
         actions.Children.Add(ActionButton("编辑所选位置…", async _ =>
         {
             if (_saveRoots.SelectedItem is not ListViewItem { Tag: SaveLocationChoice choice }) throw new InvalidOperationException("请先选择一个存档位置。");
             await EditSaveLocationAsync(choice.Location);
-        }, successMessage: "存档位置已保存。"));
+        }, successMessage: "存档位置已保存。", canExecute: () => _saveRoots.SelectedItem != null, style: "SubtleButtonStyle"));
         actions.Children.Add(ActionButton("移除所选位置", async _ =>
         {
             if (_saveGameId is not Guid gameId || _saveRoots.SelectedItem is not ListViewItem { Tag: SaveLocationChoice choice })
@@ -103,9 +123,13 @@ public sealed partial class BackupSettingsView
             _controller.Settings.CustomSavePaths.Remove(choice.Location.Id);
             await _controller.SaveSettingsAsync();
             RefreshSaveLocations();
-        }, successMessage: "已停止备份所选位置。"));
-        panel.Children.Add(actions);
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(_saveGame, "配置存档的游戏");
+        }, successMessage: "已停止备份所选位置。", canExecute: () => _saveRoots.SelectedItem != null, style: "SubtleButtonStyle"));
+        locations.Children.Add(actions);
+        locations.Children.Add(_saveSuggestions);
+        panel.Children.Add(Surface(locations));
+        AutomationProperties.SetName(_saveGame, "配置存档的游戏");
+        AutomationProperties.SetName(_saveRoots, "已配置的存档位置");
+        _saveRoots.SelectionChanged += (_, _) => RefreshOperationControls();
         _saveGame.SelectionChanged += (_, _) =>
         {
             if (_refreshingSaveGames || _saveGame.SelectedItem is not ListViewItem { Tag: GameIdentity game }) return;
@@ -178,12 +202,14 @@ public sealed partial class BackupSettingsView
         _saveGame.SelectedItem = _saveGame.Items.OfType<ListViewItem>().FirstOrDefault(item => ((GameIdentity)item.Tag).Id == _saveGameId);
         _refreshingSaveGames = false;
         _saveGameCount.Text = $"{visible.Length} / {_saveGames.Count} 款游戏";
+        _saveGameHidden.Visibility = _saveGameId != null && _saveGame.SelectedItem == null ? Visibility.Visible : Visibility.Collapsed;
         _saveGameEmpty.Visibility = visible.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
         _saveGameEmpty.Text = _saveGames.Count == 0 ? "暂无游戏。" : "无匹配游戏。";
     }
 
     private void RefreshSaveLocations()
     {
+        string? selectedLocation = (_saveRoots.SelectedItem as ListViewItem)?.Tag is SaveLocationChoice previous ? previous.Location.Id : null;
         _saveRoots.Items.Clear();
         _saveSuggestions.Children.Clear();
         RenderSaveGameChoices();
@@ -213,6 +239,7 @@ public sealed partial class BackupSettingsView
             ? available.Length > 0 ? $"{available.Length} 个候选位置待确认" : "添加存档文件夹或文件。"
             : "";
         _saveLocationHint.Visibility = string.IsNullOrEmpty(_saveLocationHint.Text) ? Visibility.Collapsed : Visibility.Visible;
+        _saveRoots.Visibility = count == 0 ? Visibility.Collapsed : Visibility.Visible;
         if (config != null)
             foreach (SaveLocation location in config.Locations)
             {
@@ -226,6 +253,10 @@ public sealed partial class BackupSettingsView
                 _saveRoots.Items.Add(new ListViewItem { Tag = new SaveLocationChoice(location, path), Content = row,
                     HorizontalContentAlignment = HorizontalAlignment.Stretch, Padding = new Thickness(8, 8, 8, 10), Margin = new Thickness(0, 0, 0, 6) });
             }
+        _saveRoots.SelectedItem = _saveRoots.Items.OfType<ListViewItem>()
+            .FirstOrDefault(row => row.Tag is SaveLocationChoice choice && choice.Location.Id == selectedLocation);
+        RefreshOperationControls();
+        if (available.Length > 0) _saveSuggestions.Children.Add(SectionHeading("候选位置"));
         foreach (SavePathSuggestion candidate in available)
         {
             var suggestion = Stack(4);

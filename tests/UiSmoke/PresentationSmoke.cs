@@ -1,5 +1,7 @@
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Automation.Peers;
+using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
@@ -10,6 +12,70 @@ namespace UiSmoke;
 
 public sealed partial class SmokeApp
 {
+    private static async Task CheckSaveLocationMenuAsync(BackupSettingsView view, DemoController controller, Pivot navigation, List<string> results)
+    {
+        ListView games = Field<ListView>(view, "_saveGame");
+        GameIdentity game = controller.GetGames()[0];
+        games.SelectedItem = games.Items.OfType<ListViewItem>().Single(row => ((GameIdentity)row.Tag).Id == game.Id);
+        InvokeButton(FindButton(view, "配置存档位置"));
+        ScrollViewer page = Field<ScrollViewer>(view, "_pageScroll");
+        TextBox search = Field<TextBox>(view, "_saveGameSearch");
+        await WaitForUiAsync(() => page.VerticalOffset > 0 && search.FocusState != FocusState.Unfocused,
+            "首屏入口应滚动到存档配置，并将焦点放到搜索框。");
+        search.Text = game.Name;
+        navigation.SelectedIndex = 2;
+        await Task.Delay(120);
+        navigation.SelectedIndex = 1;
+        await Task.Delay(120);
+        Check(page.VerticalOffset <= 1 && search.Text == game.Name && games.SelectedItem is ListViewItem { Tag: GameIdentity selected } &&
+            selected.Id == game.Id, "切回页签应从顶部开始，同时保留游戏搜索和选择。");
+        search.Text = "";
+        InvokeButton(FindButton(view, "配置存档位置"));
+        await Task.Delay(150);
+
+        var add = (DropDownButton)FindButton(view, "添加存档位置");
+        var menu = (MenuFlyout)add.Flyout;
+        MenuFlyoutItem[] entries = menu.Items.OfType<MenuFlyoutItem>().ToArray();
+        Check(entries.Select(item => item.Text).SequenceEqual(new[] { "选择存档文件夹…", "选择存档文件…", "手动填写位置…" }),
+            "添加菜单应保留三种输入方式。");
+        ListView locations = Field<ListView>(view, "_saveRoots");
+        Button edit = FindButton(view, "编辑所选位置…");
+        Button remove = FindButton(view, "移除所选位置");
+        Check(!edit.IsEnabled && !remove.IsEnabled, "未选位置时应禁用编辑和移除。");
+
+        add.StartBringIntoView(new BringIntoViewOptions { AnimationDesired = false });
+        await Task.Delay(120);
+        int saves = controller.SaveCalls;
+        int originalCount = locations.Items.Count;
+        async Task<ContentDialog> OpenManualAsync()
+        {
+            menu.ShowAt(add);
+            await Task.Delay(100);
+            var peer = new MenuFlyoutItemAutomationPeer(entries[2]);
+            ((IInvokeProvider)peer.GetPattern(PatternInterface.Invoke)).Invoke();
+            return await WaitDialogAsync(view, "添加存档位置");
+        }
+        ContentDialog cancel = await OpenManualAsync();
+        cancel.Hide();
+        await WaitIdleAsync(view);
+        Check(controller.SaveCalls == saves && !Field<InfoBar>(view, "_feedback").IsOpen, "取消添加时不应保存或报告成功。");
+        ContentDialog manual = await OpenManualAsync();
+        FindAll<TextBox>(manual).Single(box => Equals(box.Header, "存档路径")).Text = Path.Combine(game.LocalDirectory!, "save", "slot001.sav");
+        FindAll<CheckBox>(manual).Single(check => Equals(check.Content, "备份单个文件")).IsChecked = true;
+        InvokePrimary(manual);
+        await WaitIdleAsync(view);
+        Check(controller.SaveCalls == saves + 1 && locations.Items.Count == originalCount + 1, "确认添加应保存并刷新存档位置。");
+        locations.SelectedIndex = originalCount;
+        Check(edit.IsEnabled && remove.IsEnabled, "选中存档位置后应启用编辑和移除。");
+
+        InvokeButton(remove);
+        InvokePrimary(await WaitDialogAsync(view, "移除存档位置"));
+        await WaitIdleAsync(view);
+        Check(locations.Items.Count == originalCount && !edit.IsEnabled && !remove.IsEnabled, "确认移除后应刷新列表及操作状态。");
+        page.ChangeView(null, 0, null, true);
+        results.Add("PASS save-location-menu: in-page jump and keyboard focus, selection retained across tabs, entry types, cancel/add/remove and action states");
+    }
+
     private async Task CheckPresentationAsync(BackupSettingsView view, DemoController controller, Grid host, Pivot navigation, List<string> results)
     {
         navigation.SelectedIndex = 1;
@@ -25,6 +91,16 @@ public sealed partial class SmokeApp
             "详情封面上边界应与左侧游戏列表对齐。");
         Check(!FindAll<TextBlock>(games).Any(text => text.Text.Contains(controller.GetGames()[0].LocalDirectory!)),
             "游戏列表不应显示安装路径。");
+        GameIdentity longName = controller.GetGames()[1];
+        var longRow = games.Items.OfType<ListViewItem>().Single(row => ((GameIdentity)row.Tag).Id == longName.Id);
+        TextBlock longTitle = FindAll<TextBlock>((DependencyObject)longRow.Content).Single(text => text.Text == longName.Name);
+        Check(longTitle.MaxLines == 2 && longTitle.TextTrimming == TextTrimming.CharacterEllipsis &&
+            Equals(ToolTipService.GetToolTip(longTitle), longName.Name), "长游戏标题应限制为两行并保留完整工具提示。");
+        ScrollViewer savePage = Field<ScrollViewer>(view, "_pageScroll");
+        InvokeButton(FindButton(view, "配置存档位置"));
+        await Task.Delay(180);
+        await CaptureAsync(host, "save-location-detail-light.png");
+        savePage.ChangeView(null, 0, null, true);
         string broken = Path.Combine(Program.Output, "invalid-cover.jpg");
         File.WriteAllText(broken, "Synthetic corrupt cover.");
         controller.CoverOverride = broken;
@@ -41,7 +117,7 @@ public sealed partial class SmokeApp
         navigation.SelectedIndex = 4;
         await WaitForUiAsync(() => FindAll<Button>(view).Any(button => button.Content as string == "刷新状态"),
             $"待恢复页面未加载，当前页签 {navigation.SelectedIndex}。");
-        PendingRestore entry = controller.GetPending()[0];
+        PendingRestore entry = controller.GetPending().Single(item => item.Status == RestoreStatus.Ready);
         string? original = entry.TargetPath;
         string path = Path.Combine(Program.Output, "很长的合成目录-" + new string('长', 80), "savedata", "slot001.sav");
         try

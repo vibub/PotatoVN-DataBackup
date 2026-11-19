@@ -157,19 +157,25 @@ public sealed partial class SmokeApp : Application
                         AssertVisible(feedback, hostScroll, "操作反馈");
                         Check(hostScroll.ScrollableHeight < 2, "设置控件撑高了宿主滚动区域，反馈和操作会被卷走。");
                         AssertPageAlignment(contentScroll, save, index);
+                        Check(contentScroll.VerticalOffset <= 1 && contentScroll.ViewportHeight > 0,
+                            "切换页签后正文应从顶部开始，并保有可用高度。");
                         if (index == 4)
                         {
                             ListView saves = Field<ListView>(view, "_pendingList");
-                            Button refresh = FindButton(view, "刷新状态");
-                            var offset = refresh.TransformToVisual(saves).TransformPoint(new Windows.Foundation.Point());
-                            Check(size.Width >= 760 ? offset.X < -100 : Math.Abs(offset.X) < 1 && offset.Y < 0,
-                                "待恢复操作应在宽窗口的列表左侧、窄窗口的列表上方。");
+                            Button configure = FindButton(view, "设置所选目标…");
+                            var offset = configure.TransformToVisual(saves).TransformPoint(new Windows.Foundation.Point());
+                            Check(size.Width >= 760 ? offset.X < -100 : offset.X is >= 0 and <= 20 && offset.Y < 0,
+                                "待恢复选择操作应在宽窗口的列表左侧、窄窗口的列表上方。");
+                            Check(PositionY(FindButton(view, "刷新状态"), saves) < 0, "刷新入口应在筛选结果上方。");
                         }
                         if (size.Width == 1080) await CaptureAsync(host, $"settings-{size.Width}x{size.Height}-page-{index}-top.png");
                         double navigationY = PositionY(navigation, hostScroll);
                         double actionY = PositionY(save, hostScroll);
                         contentScroll.ChangeView(null, contentScroll.ScrollableHeight, null, true);
                         await Task.Delay(100);
+                        var pageContent = (FrameworkElement)contentScroll.Content;
+                        double contentBottom = PositionY(pageContent, contentScroll) + pageContent.ActualHeight;
+                        Check(contentBottom <= contentScroll.ActualHeight + 1, "正文末尾应能完整滚动到可视区域。");
                         AssertVisible(feedback, hostScroll, "滚动后的操作反馈");
                         AssertVisible(backup, hostScroll, "滚动后的立即备份");
                         Check(Math.Abs(PositionY(navigation, hostScroll) - navigationY) < 1 && Math.Abs(PositionY(save, hostScroll) - actionY) < 1,
@@ -227,6 +233,7 @@ public sealed partial class SmokeApp : Application
                 await Task.Delay(160);
                 await CheckGameSelectionAsync(view, controller, host, navigation, results);
                 await CheckSaveSuggestionAsync(view, controller, results);
+                await CheckSaveLocationMenuAsync(view, controller, navigation, results);
                 await CheckPresentationAsync(view, controller, host, navigation, results);
                 await CheckFirstRunSettingsAsync(hostPanel, view, results);
                 navigation.SelectedIndex = 4;
@@ -279,6 +286,12 @@ public sealed partial class SmokeApp : Application
         double titleLeft = title.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point()).X;
         double footerLeft = save.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point()).X;
         double pageLeft = page.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point()).X;
+        if (scroll.VerticalOffset <= 1)
+        {
+            double titleTop = PositionY(title, scroll);
+            Check(titleTop >= -1 && titleTop + title.ActualHeight <= scroll.ActualHeight + 1,
+                $"{titles[pageIndex]}切换到顶部时标题应完整显示。");
+        }
         Check(Math.Abs(titleLeft - footerLeft) < 1 && Math.Abs(titleLeft - scroll.Padding.Left) < 1,
             $"{titles[pageIndex]}内容未与底部操作左对齐：标题 X={titleLeft:0.##}，操作 X={footerLeft:0.##}。");
         Check(pageLeft >= -1 && pageLeft + page.ActualWidth <= scroll.ActualWidth - scroll.Padding.Right + 1 && scroll.ScrollableWidth < 1,
@@ -344,10 +357,13 @@ public sealed partial class SmokeApp : Application
         InvokeButton(FindButton(view, "取消选择"));
         await WaitIdleAsync(view);
         Check(Field<ListView>(view, "_pendingList").SelectedItems.Count == 0 && !feedback.IsOpen, "取消选择不应额外显示完成提示。");
-        InvokeButton(FindButton(view, "设置所选目标…"));
-        await WaitIdleAsync(view);
+        Check(!FindButton(view, "设置所选目标…").IsEnabled && !FindButton(view, "恢复所选存档").IsEnabled &&
+            Field<TextBlock>(view, "_pendingRestoreHint").Text.Contains("选择一项"),
+            "未选项目时应禁用选择相关操作并说明下一步。");
+        typeof(BackupSettingsView).GetMethod("ShowMessage", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(view, ["模拟恢复失败。", InfoBarSeverity.Error]);
         Check(feedback.IsOpen && feedback.Severity == InfoBarSeverity.Error && feedback.Visibility == Visibility.Visible,
-            "未选项目时仍须在对应页显示可操作的错误。");
+            "错误应显示在当前页签。");
         navigation.SelectedIndex = 3;
         await Task.Delay(80);
         Check(feedback.Visibility == Visibility.Collapsed, "错误反馈不应出现在无关页面。");
@@ -460,11 +476,12 @@ public sealed partial class SmokeApp : Application
         timer.IsOn = !timerBefore;
         Check(controller.Settings.Content == contentBefore && controller.Settings.GetBackupContent(true) == automaticBefore && controller.Settings.TimerEnabled == timerBefore,
             "编辑内容与自动开关时不应提前改变已生效配置。");
-        Check(Field<TextBlock>(view, "_saveState").Text.Contains("未保存"), "编辑后应显示未保存状态。");
+        TextBlock saveState = Field<TextBlock>(view, "_saveState");
+        Check(saveState.Visibility == Visibility.Visible && saveState.Text == "有未保存的设置", "编辑后应显示未保存状态。");
         await SaveSettingsAsync(view);
         Check(controller.Settings.Content.HasFlag(BackupContent.Covers) == covers.IsChecked && controller.Settings.AutomaticContent == BackupContent.Saves && controller.Settings.TimerEnabled == timer.IsOn,
             "保存后应提交内容和自动备份设置。");
-        Check(Field<TextBlock>(view, "_saveState").Text == "设置已保存", "提交成功后应显示设置已保存。");
+        Check(saveState.Visibility == Visibility.Collapsed, "提交成功后应收起未保存状态。");
         results.Add("PASS settings-commit: manual content and saves-only automatic content stay independent; both remain drafts until save");
     }
 
@@ -607,6 +624,16 @@ public sealed partial class SmokeApp : Application
         statuses[RestoreStatus.Ready].IsChecked = true;
         statuses[RestoreStatus.Restored].IsChecked = true;
         Check(pending.Items.Count == 2, "状态勾选应显示任一选中状态。");
+        Button restore = FindButton(view, "恢复所选存档");
+        Button configure = FindButton(view, "设置所选目标…");
+        TextBlock hint = Field<TextBlock>(view, "_pendingRestoreHint");
+        ListViewItem ready = pending.Items.OfType<ListViewItem>().Single(row => ((PendingRestore)row.Tag).Status == RestoreStatus.Ready);
+        pending.SelectedItems.Add(ready);
+        Check(restore.IsEnabled && configure.IsEnabled, "选中一个有效目标后应可设置或恢复。");
+        pending.SelectAll();
+        Check(!restore.IsEnabled && !configure.IsEnabled && hint.Text.Contains("同一目标"),
+            "同一目标选择多个版本时应就地提示冲突并禁用恢复。");
+        pending.SelectedItems.Clear();
         StackPanel versionFilters = Field<StackPanel>(view, "_pendingVersionFilters");
         CheckBox[] versions = versionFilters.Children.OfType<CheckBox>().ToArray();
         Check(versions.Length == 3 && ((TextBlock)versions[0].Content).Text.Contains("2 个游戏") &&
@@ -621,22 +648,40 @@ public sealed partial class SmokeApp : Application
         versions[0].IsChecked = false;
         versions[1].IsChecked = false;
         Check(pending.Items.Count == controller.GetPending().Count, "清除勾选后应恢复全部存档。");
+        pending.SelectedItems.Add(pending.Items.OfType<ListViewItem>().Single(row => ((PendingRestore)row.Tag).Status == RestoreStatus.PendingLink));
+        Check(configure.IsEnabled && !restore.IsEnabled && hint.Text.Contains("设置所选目标"),
+            "缺少目标时应保留设置入口，并在恢复按钮旁说明操作。");
+        pending.SelectedItems.Clear();
 
         navigation.SelectedIndex = 5;
         await Task.Delay(120);
         StackPanel libraries = Field<StackPanel>(view, "_libraryRows");
-        ComboBox picker = FindAll<ComboBox>(libraries).Single(combo => Equals(combo.Header, "本机游戏库"));
-        TextBox target = FindAll<TextBox>(libraries).Single(box => Equals(box.Header, "本机文件夹"));
+        ComboBox picker = FindAll<ComboBox>(libraries).Single(combo => Equals(combo.Header, "选择现有游戏库"));
+        TextBox target = FindAll<TextBox>(libraries).Single(box => Equals(box.Header, "或指定本机文件夹"));
+        Button apply = FindButton(libraries, "确认并关联此游戏库…");
+        Check(!apply.IsEnabled, "没有目标时应禁用关联。");
         string original = controller.Settings.LibraryMappings.Single().OriginalPath;
         TextBlock oldPath = FindAll<TextBlock>(libraries).Single(block => block.Text == original);
         Check(oldPath.TextWrapping == TextWrapping.Wrap && oldPath.IsTextSelectionEnabled, "旧设备路径应完整显示、可换行和复制。");
         picker.SelectedIndex = 0;
         await Task.Delay(50);
-        Check(target.Text == controller.GetLocalLibraries().Single().Path, "选择本机库应填入其真实路径。");
-        target.Text = @"D:\OtherLibrary";
+        LocalLibrary local = controller.GetLocalLibraries().Single();
+        Check(target.Text == local.Path && apply.IsEnabled, "选择本机库应填入其真实路径并启用关联。");
+        target.Text = Path.Combine(local.Path, "save");
         await Task.Delay(50);
         Check(picker.SelectedItem == null, "手动编辑路径后不能仍提交上一个库的ID。");
-        results.Add("PASS library-and-pending-filters: full path, local library selection, multi-game snapshot filtering and shared saves");
+        InvokeButton(apply);
+        ContentDialog confirm = await WaitDialogAsync(view, "确认游戏库对应位置");
+        Check(FindAll<TextBlock>(confirm).Any(block => block.Text.Contains(target.Text)), "确认时应显示本机目标。");
+        confirm.Hide();
+        await WaitIdleAsync(view);
+        Check(controller.LastLibraryAssociation == null, "取消关联不应调用保存。");
+        InvokeButton(FindButton(libraries, "确认并关联此游戏库…"));
+        InvokePrimary(await WaitDialogAsync(view, "确认游戏库对应位置"));
+        await WaitIdleAsync(view);
+        Check(controller.LastLibraryAssociation is { } saved && saved.Path == target.Text && saved.LibraryId == null,
+            "确认自定义目录后应只传递实际路径。");
+        results.Add("PASS library-and-pending-filters: pending selection guidance, same-target conflict, snapshot filters, library destination and confirmation");
     }
 
     private static T? Find<T>(DependencyObject parent) where T : DependencyObject
@@ -660,7 +705,7 @@ internal sealed class DemoController : IBackupUiController
         Directory.CreateDirectory(save);
         File.WriteAllText(Path.Combine(save, "slot001.sav"), "Synthetic save content for isolated UI checks.");
         _games = [new GameIdentity { Id = Guid.NewGuid(), Name = "本地游戏（演示）", LocalDirectory = local },
-            new GameIdentity { Id = Guid.NewGuid(), Name = "仅保留游戏信息（演示）" }];
+            new GameIdentity { Id = Guid.NewGuid(), Name = "仅保留游戏信息的长名称游戏，用于验证窗口缩小时两行换行和状态标签仍然可读（演示）" }];
         ProviderProfile profile = new() { Name = "演示 WebDAV", Endpoint = "https://example.invalid/dav/", Kind = ProviderKind.WebDav };
         Settings.Profiles.Add(profile); Settings.ActiveProfileId = profile.Id;
         Settings.Profiles.Add(new ProviderProfile { Name = "第二云盘（演示）", Endpoint = "https://second.invalid/dav/", Kind = ProviderKind.WebDav });
@@ -750,5 +795,13 @@ internal sealed class DemoController : IBackupUiController
     public Task ClearPendingAsync(IReadOnlyList<Guid> ids, CancellationToken token) => Disabled();
     private IReadOnlyList<LocalLibrary> Libraries { get; }
     public IReadOnlyList<LocalLibrary> GetLocalLibraries() => Libraries;
-    public Task ApplyLibraryMappingAsync(string id, string target, Guid? targetLibraryId, CancellationToken token) => Disabled();
+    public (string Path, Guid? LibraryId)? LastLibraryAssociation { get; private set; }
+    public Task ApplyLibraryMappingAsync(string id, string target, Guid? targetLibraryId, CancellationToken token)
+    {
+        PendingLibraryMapping mapping = Settings.LibraryMappings.Single(item => item.Id == id);
+        mapping.TargetPath = target;
+        mapping.TargetLibraryId = targetLibraryId;
+        LastLibraryAssociation = (target, targetLibraryId);
+        return Task.CompletedTask;
+    }
 }

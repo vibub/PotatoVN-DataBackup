@@ -28,6 +28,10 @@ public sealed partial class SmokeApp
         var unmatched = Field<CheckBox>(view, "_cloudOnlyUnmatched");
         try
         {
+            Expander mapping = Field<Expander>(view, "_gameMappingExpander");
+            Check(mapping.Visibility == Visibility.Visible && !mapping.IsExpanded, "手动对应应在选中版本后可展开，默认收起。");
+            mapping.IsExpanded = true;
+            await Task.Delay(150);
             string detail = Field<TextBlock>(view, "_snapshotDetails").Text;
             Check(detail.Contains("78 款游戏 · 6 款含存档 · 6 份存档") && !detail.Contains("尚无"), "历史摘要必须和真实存档引用一致，不能混入逐游戏缺失提示。");
             Check(left.Results.Items.Count == 78 && !Field<Expander>(view, "_snapshotNoticeExpander").IsExpanded, "云端必须显示完整游戏列表，旧提示默认收起。");
@@ -86,7 +90,9 @@ public sealed partial class SmokeApp
             controller.Snapshots = [];
             InvokeButton(FindButton(view, "读取云端备份"));
             await WaitIdleAsync(view);
-            Check(left.Results.Items.Count == 0 && Field<Expander>(view, "_snapshotNoticeExpander").Visibility == Visibility.Collapsed, "空历史不得残留旧游戏和提示。");
+            Check(left.Results.Items.Count == 0 && Field<Expander>(view, "_snapshotNoticeExpander").Visibility == Visibility.Collapsed &&
+                mapping.Visibility == Visibility.Collapsed && !FindButton(view, "选择内容并恢复…").IsEnabled,
+                "空历史应清除旧游戏和提示，并禁用恢复。");
             results.Add("PASS history-ui: all 78 games / 6 saves agree; tags; two-column search/filter/map; selection retained; narrow stacking; progress logs collapsed; empty reload cleared");
         }
         finally

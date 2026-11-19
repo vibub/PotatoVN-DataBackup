@@ -39,22 +39,38 @@ public sealed partial class BackupSettingsView
     private readonly NumberBox _keepSnapshots = Number("每台设备保留的软件资料版本数", 1, 10000, 1);
     private readonly NumberBox _keepSaves = Number("每个游戏每台设备保留的存档版本数", 1, 10000, 1);
     private readonly TextBox _deviceName = TextInput("这台设备的名称");
+    private readonly TextBlock _lastSuccessfulBackup = SecondaryText("");
 
     private StackPanel BuildContentTab()
     {
-        var panel = Stack();
-        panel.Children.Add(Heading("手动备份内容"));
-        BuildContentChoices(panel, _contentChecks, _controller.Settings.Content);
-        panel.Children.Add(Heading("游戏范围"));
+        var panel = Stack(12);
+        var header = Row();
+        header.Children.Add(SectionHeading("手动备份内容"));
+        var goToSaves = new Button { Content = "配置存档位置" };
+        SetButtonStyle(goToSaves, "SubtleButtonStyle");
+        goToSaves.Click += (_, _) =>
+        {
+            double top = _saveLocationHeading.TransformToVisual(_pageScroll).TransformPoint(new Windows.Foundation.Point()).Y;
+            _pageScroll.ChangeView(null, Math.Max(0, _pageScroll.VerticalOffset + top - _pageScroll.Padding.Top), null, true);
+            _saveGameSearch.Focus(FocusState.Programmatic);
+        };
+        header.Children.Add(goToSaves);
+        panel.Children.Add(header);
+        var content = Stack(4);
+        BuildContentChoices(content, _contentChecks, _controller.Settings.Content);
+        panel.Children.Add(Surface(content));
+
+        panel.Children.Add(SectionHeading("游戏范围"));
+        var scope = Stack(8);
         var scopeChoices = Row();
         _localGames.IsChecked = _controller.Settings.IncludeLocalGames;
         _nonLocalGames.IsChecked = _controller.Settings.IncludeNonLocalGames;
         _specificGames.IsChecked = !_controller.Settings.AllGames;
         scopeChoices.Children.Add(_localGames);
         scopeChoices.Children.Add(_nonLocalGames);
-        panel.Children.Add(scopeChoices);
-        panel.Children.Add(Note("未关联有效游戏目录的条目属于非本地游戏。"));
-        panel.Children.Add(_specificGames);
+        scope.Children.Add(scopeChoices);
+        scope.Children.Add(SecondaryText("未关联有效游戏目录的条目属于非本地游戏。"));
+        scope.Children.Add(_specificGames);
         _selectedGameIds.UnionWith(_controller.Settings.SelectedGameIds);
         RefreshGameSelection(true);
         foreach (CheckBox check in new[] { _localGames, _nonLocalGames })
@@ -64,15 +80,15 @@ public sealed partial class BackupSettingsView
         }
         _specificGames.Checked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
         _specificGames.Unchecked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
-        BuildGameSelection(panel);
-        panel.Children.Add(ActionButton("刷新游戏列表", _ =>
+        BuildGameSelection(scope);
+        scope.Children.Add(ActionButton("刷新游戏列表", _ =>
         {
             RefreshGameSelection(true);
             RefreshSaveGameChoices();
             return Task.CompletedTask;
-        }));
-        panel.Children.Add(Heading("各游戏存档位置"));
-        panel.Children.Add(Note("支持添加多个文件夹或文件。"));
+        }, style: "SubtleButtonStyle"));
+        panel.Children.Add(Surface(scope));
+        panel.Children.Add(_saveLocationHeading);
         BuildSaveLocationControls(panel);
         return panel;
     }
@@ -93,6 +109,8 @@ public sealed partial class BackupSettingsView
         all.Click += (_, _) => { foreach (CheckBox check in checks.Values) check.IsChecked = true; };
         var none = new Button { Content = "全不选" };
         none.Click += (_, _) => { foreach (CheckBox check in checks.Values) check.IsChecked = false; };
+        SetButtonStyle(all, "SubtleButtonStyle");
+        SetButtonStyle(none, "SubtleButtonStyle");
         selectActions.Children.Add(all);
         selectActions.Children.Add(none);
         panel.Children.Add(selectActions);
@@ -207,8 +225,8 @@ public sealed partial class BackupSettingsView
     private StackPanel BuildAutomationTab()
     {
         var panel = Stack();
-        panel.Children.Add(Heading("自动备份"));
-        panel.Children.Add(Note("仅在 PotatoVN 运行且插件启用时执行。"));
+        panel.Children.Add(SectionHeading("自动备份"));
+        panel.Children.Add(SecondaryText("仅在 PotatoVN 运行且插件启用时执行。"));
         _timer.IsOn = _controller.Settings.TimerEnabled;
         _onExit.IsOn = _controller.Settings.OnGameExitEnabled;
         _interval.Value = _controller.Settings.IntervalHours;
@@ -216,13 +234,18 @@ public sealed partial class BackupSettingsView
         _keepSnapshots.Value = _controller.Settings.KeepSnapshots;
         _keepSaves.Value = _controller.Settings.KeepSaves;
         _deviceName.Text = _controller.Settings.DeviceName;
-        panel.Children.Add(_timer);
-        panel.Children.Add(_interval);
-        panel.Children.Add(_onExit);
-        panel.Children.Add(_exitDelay);
-        panel.Children.Add(Heading("自动备份内容"));
-        panel.Children.Add(Note("定时和游戏退出后备份使用以下选择；游戏范围与存档位置在“备份内容”设置。"));
-        BuildContentChoices(panel, _automaticContentChecks, _controller.Settings.GetBackupContent(true));
+        var timer = Stack(8);
+        timer.Children.Add(_timer);
+        timer.Children.Add(_interval);
+        var onExit = Stack(8);
+        onExit.Children.Add(_onExit);
+        onExit.Children.Add(_exitDelay);
+        panel.Children.Add(ResponsiveColumns(Surface(timer), Surface(onExit)));
+        panel.Children.Add(SectionHeading("自动备份内容"));
+        panel.Children.Add(SecondaryText("游戏范围和存档位置在“备份内容”中设置。"));
+        var content = Stack(4);
+        BuildContentChoices(content, _automaticContentChecks, _controller.Settings.GetBackupContent(true));
+        panel.Children.Add(Surface(content));
         var advanced = Stack();
         advanced.Children.Add(Note("超过保留数量时清理旧版本，仍被快照引用的存档会保留。"));
         foreach (UIElement item in new UIElement[] { _deviceName, _keepSnapshots, _keepSaves }) advanced.Children.Add(item);
@@ -234,7 +257,7 @@ public sealed partial class BackupSettingsView
         foreach (NumberBox number in new[] { _interval, _exitDelay, _keepSnapshots, _keepSaves })
             number.ValueChanged += (_, _) => MarkSettingsDirty();
         _deviceName.TextChanged += (_, _) => MarkSettingsDirty();
-        panel.Children.Add(Note(_controller.Settings.LastSuccessfulBackupUtc is { } time ? $"最近成功备份：{time.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : "尚未完成备份。"));
+        panel.Children.Add(_lastSuccessfulBackup);
         return panel;
     }
 
