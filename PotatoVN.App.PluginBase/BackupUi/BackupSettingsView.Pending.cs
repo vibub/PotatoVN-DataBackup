@@ -27,7 +27,6 @@ public sealed partial class BackupSettingsView
         MaxHeight = 440
     };
     private bool _buildingPendingFilters;
-    private string _pendingFilterKey = "";
 
     private StackPanel BuildPendingTab()
     {
@@ -45,17 +44,19 @@ public sealed partial class BackupSettingsView
         panel.Children.Add(statusFilters);
         panel.Children.Add(PendingFilterGroup("按游戏筛选", _pendingGameFilters));
         panel.Children.Add(PendingFilterGroup("按备份版本筛选", _pendingVersionFilters));
-        panel.Children.Add(_pendingList);
-        panel.Children.Add(_pendingEmpty);
-        panel.Children.Add(_pendingSelection);
+        var results = Stack(8);
+        results.Children.Add(_pendingList);
+        results.Children.Add(_pendingEmpty);
+        var sidebar = Stack(8);
+        sidebar.VerticalAlignment = VerticalAlignment.Top;
+        sidebar.Children.Add(_pendingSelection);
         var actions = Row();
+        sidebar.Children.Add(actions);
         actions.Children.Add(ActionButton("刷新状态", async ct => await _controller.RefreshPendingAsync(ct), successMessage: "待恢复存档已刷新。"));
         actions.Children.Add(ActionButton("全选筛选结果", _ => { _pendingList.SelectAll(); return Task.CompletedTask; }));
         actions.Children.Add(ActionButton("取消选择", _ => { _pendingList.SelectedItems.Clear(); return Task.CompletedTask; }));
         actions.Children.Add(ActionButton("设置所选目标…", async ct => await ConfigurePendingTargetAsync(ct), successMessage: "恢复位置已保存。"));
-        panel.Children.Add(actions);
-        var restoreActions = Row();
-        restoreActions.Children.Add(ActionButton("恢复所选存档", async ct =>
+        actions.Children.Add(ActionButton("恢复所选存档", async ct =>
         {
             Guid[] ids = SelectedPendingIds();
             if (ids.Length == 0) throw new InvalidOperationException("请先选择要恢复的存档位置。");
@@ -73,7 +74,7 @@ public sealed partial class BackupSettingsView
                 return;
             await _controller.RestorePendingAsync(ids, ct);
         }));
-        panel.Children.Add(restoreActions);
+        panel.Children.Add(ResponsiveColumns(sidebar, results, new GridLength(168)));
         var cleanup = Stack(8);
         cleanup.Children.Add(Note("仅清理本机暂存副本，云端备份和游戏存档会保留。"));
         var cleanupActions = Row();
@@ -114,9 +115,12 @@ public sealed partial class BackupSettingsView
 
     private void SetPendingFilters(StackPanel options, IEnumerable<(string Key, string Label)> items)
     {
-        HashSet<string> selected = CheckedPendingFilters(options.Children.OfType<CheckBox>());
+        var choices = items.ToArray();
+        var old = options.Children.OfType<CheckBox>().ToArray();
+        if (old.Select(check => ((string)check.Tag, ((TextBlock)check.Content).Text)).SequenceEqual(choices)) return;
+        HashSet<string> selected = CheckedPendingFilters(old);
         options.Children.Clear();
-        foreach (var (key, label) in items)
+        foreach (var (key, label) in choices)
         {
             CheckBox check = PendingFilter(key, label);
             check.IsChecked = selected.Contains(key);
@@ -128,25 +132,27 @@ public sealed partial class BackupSettingsView
     {
         if (_pendingList == null || _buildingPendingFilters) return;
         IReadOnlyList<PendingRestore> entries = _controller.GetPending();
-        _pendingSummary.Text = $"实际占用 {SizeLabel(_controller.PendingBytes)} · {entries.Select(p => p.Manifest.Game.Id).Distinct().Count()} 个游戏 · {entries.Select(p => $"{p.ProfileId}/{p.Manifest.ManifestPath}").Distinct().Count()} 个版本 · {entries.Count} 个存档位置";
+        var versionGroups = entries.SelectMany(entry => entry.BackupVersions.DefaultIfEmpty(),
+                (entry, version) => (Entry: entry, Version: version))
+            .GroupBy(row => VersionKey(row.Entry.ProfileId, row.Version))
+            .OrderByDescending(group => group.First().Version?.CreatedUtc).ToArray();
+        _pendingSummary.Text = $"实际占用 {SizeLabel(_controller.PendingBytes)} · {entries.Select(p => p.Manifest.Game.Id).Distinct().Count()} 个游戏 · {versionGroups.Count(group => group.First().Version != null)} 个备份版本 · {entries.Count} 个存档位置";
         foreach (var (status, check) in _pendingStatusFilters)
             ((TextBlock)check.Content).Text = $"{StateLabel(status)} {entries.Count(p => p.Status == status)}";
-        string key = string.Join("|", entries.Select(p => p.Id.ToString()).OrderBy(id => id));
-        if (_pendingFilterKey != key)
+
+        _buildingPendingFilters = true;
+        SetPendingFilters(_pendingGameFilters, entries.GroupBy(p => p.Manifest.Game.Id)
+            .OrderBy(group => group.First().Manifest.Game.Name, StringComparer.CurrentCultureIgnoreCase)
+            .Select(group => (group.Key.ToString("N"), group.First().Manifest.Game.Name)));
+        SetPendingFilters(_pendingVersionFilters, versionGroups.Select(group =>
         {
-            _pendingFilterKey = key;
-            _buildingPendingFilters = true;
-            SetPendingFilters(_pendingGameFilters, entries.GroupBy(p => p.Manifest.Game.Id)
-                .OrderBy(group => group.First().Manifest.Game.Name, StringComparer.CurrentCultureIgnoreCase)
-                .Select(group => (group.Key.ToString("N"), group.First().Manifest.Game.Name)));
-            SetPendingFilters(_pendingVersionFilters, entries.GroupBy(VersionKey)
-                .OrderByDescending(group => group.First().Manifest.CapturedUtc).Select(group =>
-                {
-                    PendingRestore entry = group.First();
-                    return (group.Key, $"{entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} · {entry.ProfileName}");
-                }));
-            _buildingPendingFilters = false;
-        }
+            var (entry, version) = group.First();
+            int games = group.Select(row => row.Entry.Manifest.Game.Id).Distinct().Count();
+            string label = version == null ? "旧暂存（版本未记录）" : BackupTime(version.CreatedUtc);
+            if (!string.IsNullOrWhiteSpace(version?.DeviceName)) label += " · " + version.DeviceName;
+            return (group.Key, $"{label} · {entry.ProfileName} · {games} 个游戏");
+        }));
+        _buildingPendingFilters = false;
 
         HashSet<Guid> selected = SelectedPendingIds().ToHashSet();
         _pendingList.Items.Clear();
@@ -157,9 +163,11 @@ public sealed partial class BackupSettingsView
         foreach (PendingRestore entry in entries.OrderBy(p => p.Manifest.Game.Name, StringComparer.CurrentCultureIgnoreCase).ThenByDescending(p => p.Manifest.CapturedUtc))
         {
             if (games.Count > 0 && !games.Contains(entry.Manifest.Game.Id.ToString("N"))) continue;
-            if (versions.Count > 0 && !versions.Contains(VersionKey(entry))) continue;
+            if (versions.Count > 0 && !entry.BackupVersions.DefaultIfEmpty()
+                    .Any(version => versions.Contains(VersionKey(entry.ProfileId, version)))) continue;
             if (statuses.Count > 0 && !statuses.Contains(entry.Status.ToString())) continue;
-            string description = $"{entry.Manifest.Game.Name} {entry.ProfileName} {entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} {entry.TargetPath}";
+            string description = $"{entry.Manifest.Game.Name} {entry.ProfileName} {BackupTime(entry.Manifest.CapturedUtc)} {entry.TargetPath}";
+            if (search.Length > 0) description += " " + string.Join(" ", entry.BackupVersions.Select(v => BackupTime(v.CreatedUtc)));
             if (search.Length > 0 && !description.Contains(search, StringComparison.CurrentCultureIgnoreCase)) continue;
             var content = Stack(8);
             var badges = Row();
@@ -179,7 +187,7 @@ public sealed partial class BackupSettingsView
             content.Children.Add(badges);
             var metadata = Row();
             metadata.Children.Add(SecondaryText(entry.ProfileName));
-            metadata.Children.Add(SecondaryText(entry.Manifest.CapturedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")));
+            metadata.Children.Add(SecondaryText($"采集于 {BackupTime(entry.Manifest.CapturedUtc)}"));
             metadata.Children.Add(SecondaryText(SizeLabel(entry.Manifest.Length)));
             content.Children.Add(metadata);
             SaveLocation? location = entry.Manifest.Locations.FirstOrDefault(l => l.Id == entry.LocationId);
@@ -219,7 +227,7 @@ public sealed partial class BackupSettingsView
         target.Text = entry.TargetOverride ?? "";
         var body = Stack();
         body.Children.Add(GameEntryContent(entry.Manifest.Game, "云端存档", StatusTone.Info));
-        body.Children.Add(SecondaryText($"版本时间：{entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}"));
+        body.Children.Add(SecondaryText($"存档采集于 {BackupTime(entry.Manifest.CapturedUtc)}"));
         body.Children.Add(game);
         body.Children.Add(target);
         SaveLocation? location = entry.Manifest.Locations.FirstOrDefault(l => l.Id == entry.LocationId);
@@ -277,7 +285,8 @@ public sealed partial class BackupSettingsView
         await _controller.ClearPendingAsync(ids, ct);
     }
 
-    private static string VersionKey(PendingRestore entry) => $"{entry.ProfileId:N}/{entry.Manifest.ManifestPath}";
+    private static string VersionKey(Guid profileId, PendingBackupVersion? version) => $"{profileId:N}/{version?.ManifestPath}";
+    private static string BackupTime(DateTimeOffset time) => time.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
     private static string StateLabel(RestoreStatus status) => status switch
     {
         RestoreStatus.PendingLink => "待关联", RestoreStatus.PendingPath => "待指定路径",

@@ -38,7 +38,7 @@ public sealed class PendingRestoreStore
     }
 
     public async Task StageAsync(ProviderProfile profile, SaveManifest manifest, string downloadedZip, CancellationToken ct = default,
-        IReadOnlyList<Guid>? excludedLocalGameIds = null, Guid? selectedLocalGameId = null)
+        IReadOnlyList<Guid>? excludedLocalGameIds = null, Guid? selectedLocalGameId = null, SnapshotManifest? snapshot = null)
     {
         ValidateManifest(manifest);
         if (!string.Equals(await BackupFiles.HashAsync(downloadedZip, ct), manifest.Sha256, StringComparison.OrdinalIgnoreCase) ||
@@ -58,6 +58,7 @@ public sealed class PendingRestoreStore
             }
             finally { if (File.Exists(temp)) File.Delete(temp); }
         }
+        PendingBackupVersion? version = snapshot == null ? null : DescribeVersion(snapshot);
         foreach (var location in manifest.Locations)
         {
             var item = Items.FirstOrDefault(i => i.ProfileId == profile.Id && i.Manifest.ManifestPath == manifest.ManifestPath &&
@@ -74,6 +75,8 @@ public sealed class PendingRestoreStore
             }
             // 同一云端版本重新组包时 ZIP 字节可能变化，更新缓存引用并保留已确认的目标与状态。
             item.Manifest = manifest;
+            if (version != null && !item.BackupVersions.Any(v => v.ManifestPath == version.ManifestPath))
+                item.BackupVersions.Add(version);
             if (excludedLocalGameIds == null) continue;
             item.ExcludedLocalGameIds = excludedLocalGameIds.ToList();
             if (selectedLocalGameId == null || item.LocalGameId != selectedLocalGameId)
@@ -87,6 +90,27 @@ public sealed class PendingRestoreStore
         }
         await SaveAsync(ct);
     }
+
+    public async Task IdentifyLegacyVersionsAsync(Guid profileId, IReadOnlyList<SnapshotManifest> snapshots, CancellationToken ct = default)
+    {
+        var legacy = Items.Where(item => item.ProfileId == profileId && item.BackupVersions.Count == 0).ToArray();
+        if (legacy.Length == 0) return;
+
+        var references = snapshots.SelectMany(snapshot => snapshot.SaveManifestPaths.Distinct(StringComparer.Ordinal),
+            (snapshot, path) => (Snapshot: snapshot, Path: path)).ToLookup(reference => reference.Path, StringComparer.Ordinal);
+        bool changed = false;
+        foreach (PendingRestore item in legacy)
+        {
+            var matches = references[item.Manifest.ManifestPath];
+            if (matches.Count() != 1) continue;
+            item.BackupVersions.Add(DescribeVersion(matches.Single().Snapshot));
+            changed = true;
+        }
+        if (changed) await SaveAsync(ct);
+    }
+
+    private static PendingBackupVersion DescribeVersion(SnapshotManifest snapshot) =>
+        new(snapshot.ManifestPath, snapshot.CreatedUtc, snapshot.DeviceName);
 
     public void Refresh(IReadOnlyList<GameIdentity> games, IReadOnlyList<GameMatchMapping> mappings)
     {
@@ -170,7 +194,7 @@ public sealed class PendingRestoreStore
         var files = Directory.Exists(Path.Combine(_root, "archives"))
             ? Directory.EnumerateFiles(Path.Combine(_root, "archives")).Sum(p => new FileInfo(p).Length) : 0;
         return new PendingStats(files, Items.Select(i => i.Manifest.Game.Id).Distinct().Count(),
-            Items.Select(i => (i.ProfileId, i.Manifest.ManifestPath)).Distinct().Count(),
+            Items.SelectMany(item => item.BackupVersions.Select(v => (item.ProfileId, v.ManifestPath))).Distinct().Count(),
             Enum.GetValues<RestoreStatus>().ToDictionary(s => s, s => Items.Count(i => i.Status == s)));
     }
 }

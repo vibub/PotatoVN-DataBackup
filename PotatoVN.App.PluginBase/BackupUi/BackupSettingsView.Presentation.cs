@@ -43,22 +43,23 @@ public sealed partial class BackupSettingsView
         return badge;
     }
 
-    private static Grid GameColumns(FrameworkElement cloud, FrameworkElement local)
+    private static Grid ResponsiveColumns(FrameworkElement left, FrameworkElement right, GridLength? wideLeftWidth = null)
     {
         var grid = new Grid { ColumnSpacing = 20, RowSpacing = 16 };
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-        grid.Children.Add(cloud);
-        grid.Children.Add(local);
+        grid.Children.Add(left);
+        grid.Children.Add(right);
         void Arrange()
         {
             bool wide = grid.ActualWidth >= 640;
-            grid.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
-            grid.ColumnDefinitions[1].Width = wide ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-            Grid.SetColumn(local, wide ? 1 : 0);
-            Grid.SetRow(local, wide ? 0 : 1);
+            var fill = new GridLength(1, GridUnitType.Star);
+            grid.ColumnDefinitions[0].Width = wide ? wideLeftWidth ?? fill : fill;
+            grid.ColumnDefinitions[1].Width = wide ? fill : new GridLength(0);
+            Grid.SetColumn(right, wide ? 1 : 0);
+            Grid.SetRow(right, wide ? 0 : 1);
         }
         grid.SizeChanged += (_, _) => Arrange();
         Arrange();

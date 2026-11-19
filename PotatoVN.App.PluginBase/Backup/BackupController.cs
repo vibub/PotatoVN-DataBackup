@@ -57,7 +57,7 @@ public sealed class BackupController : IBackupUiController, IDisposable
     {
         Volatile.Write(ref _pendingView, _pending.Items.Select(i => new PendingRestore
         {
-            Id = i.Id, ProfileId = i.ProfileId, ProfileName = i.ProfileName, Manifest = i.Manifest,
+            Id = i.Id, ProfileId = i.ProfileId, ProfileName = i.ProfileName, Manifest = i.Manifest, BackupVersions = i.BackupVersions.ToList(),
             LocationId = i.LocationId, LocalGameId = i.LocalGameId, ExcludedLocalGameIds = i.ExcludedLocalGameIds.ToList(), Status = i.Status,
             TargetOverride = i.TargetOverride, TargetPath = i.TargetPath, Error = i.Error, IsBusy = i.IsBusy
         }).ToArray());
@@ -132,6 +132,7 @@ public sealed class BackupController : IBackupUiController, IDisposable
         {
             Guid profile = _coordinator.ActiveProfile.Id;
             result = await _coordinator.ListSnapshotsAsync(token);
+            await _pending.IdentifyLegacyVersionsAsync(profile, result, token);
             _listedProfiles.Clear();
             foreach (SnapshotManifest item in result) _listedProfiles[item.ManifestPath] = profile;
             Status = $"找到 {result.Count} 个完整备份版本。";

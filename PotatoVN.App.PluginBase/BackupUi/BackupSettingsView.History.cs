@@ -65,7 +65,7 @@ public sealed partial class BackupSettingsView
         _mapBackupGame.Filters.Children.Add(_cloudOnlyUnmatched);
         _mapBackupGame.Filters.MinHeight = _mapLocalGame.Filters.MinHeight = 36;
         _mapBackupGame.Results.MaxHeight = _mapLocalGame.Results.MaxHeight = 320;
-        mapping.Children.Add(GameColumns(_mapBackupGame, _mapLocalGame));
+        mapping.Children.Add(ResponsiveColumns(_mapBackupGame, _mapLocalGame));
         mapping.Children.Add(_mappingPreview);
         _mapBackupGame.Filter = item =>
         {

@@ -17,6 +17,7 @@ var checks = new (string Name, Func<Task> Run)[]
     ("索引半写回退及双损坏停止", InterruptedIndex),
     ("图片缓存及七天完整重校验", ImageCache),
     ("默认恢复接入待恢复区与软件合并", RestoreFlow),
+    ("待恢复按快照持久归组并识别旧暂存", PendingVersions),
     ("缺失包补传与损坏包拒绝恢复", MissingAndCorrupt),
     ("不可补齐历史缺失时不上传或清理", UnrecoverableHistory),
     ("重命名删除只更新完整引用清单", RenameDelete),
@@ -165,6 +166,54 @@ async Task RestoreFlow()
     fixture.Host.BeforeImport = cancelled.Cancel;
     await Fails<OperationCanceledException>(() => fixture.Coordinator.StageRestoreAsync(snapshot, BackupContent.GameInfo, cancelled.Token));
     Check(!progress.Contains(100), "导入准备取消不得报告成功");
+}
+
+async Task PendingVersions()
+{
+    var fixture = Fixture.Create(root);
+    fixture.Settings.Content = BackupContent.Saves;
+    string otherRoot = Path.Combine(fixture.Root, "second-game");
+    Directory.CreateDirectory(Path.Combine(otherRoot, "save"));
+    File.WriteAllText(Path.Combine(otherRoot, "save", "slot.dat"), "unchanged second game");
+    var other = new GameIdentity { Id = Guid.NewGuid(), Name = "另一款游戏", LocalDirectory = otherRoot };
+    fixture.Host.AdditionalGames.Add(other);
+    fixture.Settings.SaveConfigs.Add(new GameSaveConfig
+    {
+        GameId = other.Id, Locations = [new SaveLocation { Id = "save", BaseKind = SaveBaseKind.GameRoot, RelativePath = "save" }]
+    });
+
+    SnapshotManifest first = await fixture.Coordinator.BackupAsync();
+    await File.WriteAllTextAsync(fixture.SavePath, "new progress");
+    SnapshotManifest second = await fixture.Coordinator.BackupAsync();
+    Check(first.SaveManifestPaths.Count == 2 && second.SaveManifestPaths.Count == 2 &&
+        first.SaveManifestPaths.Intersect(second.SaveManifestPaths).Count() == 1, "样本应为两个快照复用一份存档");
+    await fixture.Coordinator.StageRestoreAsync(first, BackupContent.Saves);
+    await fixture.Coordinator.StageRestoreAsync(second, BackupContent.Saves);
+
+    var local = new PendingRestoreStore(fixture.Root);
+    await local.LoadAsync();
+    Check(local.Items.Count == 3 && local.GetStats().Versions == 2 &&
+        local.Items.Count(item => item.BackupVersions.Any(v => v.ManifestPath == first.ManifestPath && v.CreatedUtc == first.CreatedUtc)) == 2 &&
+        local.Items.Count(item => item.BackupVersions.Any(v => v.ManifestPath == second.ManifestPath && v.CreatedUtc == second.CreatedUtc)) == 2,
+        "两个快照应各包含两款游戏，共享存档在待恢复列表中只有一条");
+    PendingRestore reused = local.Items.Single(item => item.Manifest.Game.Id == other.Id);
+    Check(reused.BackupVersions.Count == 2, "重新暂存丢失了复用存档的原快照归属");
+
+    // 旧 tasks.json 不含快照字段，历史只能补回当前唯一引用。
+    string tasks = Path.Combine(fixture.Root, "pending", "tasks.json");
+    var old = (await BackupFiles.ReadJsonAsync<JsonArray>(tasks));
+    foreach (JsonObject item in old.OfType<JsonObject>()) item.Remove(nameof(PendingRestore.BackupVersions));
+    await BackupFiles.WriteJsonAsync(tasks, old);
+    await local.LoadAsync();
+    var savedIds = local.Items.Select(item => item.Id).ToArray();
+    await local.IdentifyLegacyVersionsAsync(Guid.NewGuid(), [first, second]);
+    Check(local.GetStats().Versions == 0, "不能使用其他渠道的历史补来源");
+    await local.IdentifyLegacyVersionsAsync(fixture.Settings.ActiveProfileId!.Value, [first, second]);
+    await local.LoadAsync();
+    Check(local.Items.Select(item => item.Id).SequenceEqual(savedIds) && local.GetStats().Versions == 2 &&
+        local.Items.Where(item => item.Manifest.Game.Id != other.Id).All(item => item.BackupVersions.Count == 1) &&
+        local.Items.Single(item => item.Manifest.Game.Id == other.Id).BackupVersions.Count == 0,
+        "旧暂存仅补唯一归属，保留任务标识和无法确定的共享条目");
 }
 
 async Task MissingAndCorrupt()
@@ -393,7 +442,8 @@ sealed class Host(GameIdentity game, string root) : IBackupHost
     public byte[]? ImportedArchive;
     public Action? BeforeImport;
     public byte[] Image = [1, 2, 3, 4, 5];
-    public IReadOnlyList<GameIdentity> GetGames() => [game];
+    public List<GameIdentity> AdditionalGames { get; } = [];
+    public IReadOnlyList<GameIdentity> GetGames() => [game, .. AdditionalGames];
     public async Task<HostExport> ExportForBackupAsync(string directory, CancellationToken ct)
     {
         Directory.CreateDirectory(directory);

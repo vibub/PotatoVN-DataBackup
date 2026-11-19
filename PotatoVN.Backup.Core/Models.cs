@@ -162,12 +162,16 @@ public sealed class SnapshotManifest
     public Dictionary<Guid, DateTimeOffset> SaveGames { get; set; } = [];
 }
 
+public sealed record PendingBackupVersion(string ManifestPath, DateTimeOffset CreatedUtc, string DeviceName);
+
 public sealed class PendingRestore
 {
     public Guid Id { get; set; } = Guid.NewGuid();
     public Guid ProfileId { get; set; }
     public string ProfileName { get; set; } = "";
     public SaveManifest Manifest { get; set; } = new();
+    // 多个快照可以复用同一份存档。版本归属与暂存包标识分别保留。
+    public List<PendingBackupVersion> BackupVersions { get; set; } = [];
     public string LocationId { get; set; } = "";
     public Guid? LocalGameId { get; set; }
     public List<Guid> ExcludedLocalGameIds { get; set; } = [];

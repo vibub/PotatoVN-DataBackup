@@ -157,6 +157,14 @@ public sealed partial class SmokeApp : Application
                         AssertVisible(feedback, hostScroll, "操作反馈");
                         Check(hostScroll.ScrollableHeight < 2, "设置控件撑高了宿主滚动区域，反馈和操作会被卷走。");
                         AssertPageAlignment(contentScroll, save, index);
+                        if (index == 4)
+                        {
+                            ListView saves = Field<ListView>(view, "_pendingList");
+                            Button refresh = FindButton(view, "刷新状态");
+                            var offset = refresh.TransformToVisual(saves).TransformPoint(new Windows.Foundation.Point());
+                            Check(size.Width >= 760 ? offset.X < -100 : Math.Abs(offset.X) < 1 && offset.Y < 0,
+                                "待恢复操作应在宽窗口的列表左侧、窄窗口的列表上方。");
+                        }
                         if (size.Width == 1080) await CaptureAsync(host, $"settings-{size.Width}x{size.Height}-page-{index}-top.png");
                         double navigationY = PositionY(navigation, hostScroll);
                         double actionY = PositionY(save, hostScroll);
@@ -600,12 +608,18 @@ public sealed partial class SmokeApp : Application
         statuses[RestoreStatus.Restored].IsChecked = true;
         Check(pending.Items.Count == 2, "状态勾选应显示任一选中状态。");
         StackPanel versionFilters = Field<StackPanel>(view, "_pendingVersionFilters");
-        CheckBox version = versionFilters.Children.OfType<CheckBox>().Last();
-        version.IsChecked = true;
-        Check(pending.Items.Count <= 1, "版本与状态筛选应取交集。");
-        version.IsChecked = false;
+        CheckBox[] versions = versionFilters.Children.OfType<CheckBox>().ToArray();
+        Check(versions.Length == 3 && ((TextBlock)versions[0].Content).Text.Contains("2 个游戏") &&
+            ((TextBlock)versions[2].Content).Text.Contains("版本未记录"), "过滤项应按真实备份快照和旧暂存归组。");
+        versions[0].IsChecked = true;
+        Check(pending.Items.Count == 2, "版本与状态筛选应取交集。");
         statuses[RestoreStatus.Ready].IsChecked = false;
         statuses[RestoreStatus.Restored].IsChecked = false;
+        Check(pending.Items.Count == 3, "同一快照应显示其中的多款游戏。");
+        versions[1].IsChecked = true;
+        Check(pending.Items.Count == 4, "多选快照应包含共享存档且同一条目只显示一次。");
+        versions[0].IsChecked = false;
+        versions[1].IsChecked = false;
         Check(pending.Items.Count == controller.GetPending().Count, "清除勾选后应恢复全部存档。");
 
         navigation.SelectedIndex = 5;
@@ -622,7 +636,7 @@ public sealed partial class SmokeApp : Application
         target.Text = @"D:\OtherLibrary";
         await Task.Delay(50);
         Check(picker.SelectedItem == null, "手动编辑路径后不能仍提交上一个库的ID。");
-        results.Add("PASS library-and-pending-filters: full path, local library selection, checkbox union and intersection");
+        results.Add("PASS library-and-pending-filters: full path, local library selection, multi-game snapshot filtering and shared saves");
     }
 
     private static T? Find<T>(DependencyObject parent) where T : DependencyObject
@@ -650,12 +664,22 @@ internal sealed class DemoController : IBackupUiController
         ProviderProfile profile = new() { Name = "演示 WebDAV", Endpoint = "https://example.invalid/dav/", Kind = ProviderKind.WebDav };
         Settings.Profiles.Add(profile); Settings.ActiveProfileId = profile.Id;
         Settings.Profiles.Add(new ProviderProfile { Name = "第二云盘（演示）", Endpoint = "https://second.invalid/dav/", Kind = ProviderKind.WebDav });
+        var now = DateTimeOffset.UtcNow;
+        var current = new PendingBackupVersion("snapshots/current", now, "演示设备");
+        var older = new PendingBackupVersion("snapshots/older", now.AddHours(-1), "演示设备");
         _pending = Enum.GetValues<RestoreStatus>().Select(status => new PendingRestore
         {
             ProfileId = profile.Id, ProfileName = profile.Name, Status = status, LocationId = "demo-root",
             LocalGameId = status == RestoreStatus.PendingLink ? null : _games[0].Id,
             TargetPath = status is RestoreStatus.PendingLink or RestoreStatus.PendingPath ? null : Path.Combine(local, "savedata"),
-            Manifest = new SaveManifest { Game = _games[0], Id = status.ToString(), CapturedUtc = DateTimeOffset.UtcNow,
+            BackupVersions = status switch
+            {
+                RestoreStatus.Ready => [current, older],
+                RestoreStatus.Restored or RestoreStatus.PendingLink => [current],
+                RestoreStatus.PendingPath => [older],
+                _ => []
+            },
+            Manifest = new SaveManifest { Game = status == RestoreStatus.PendingLink ? _games[1] : _games[0], Id = status.ToString(), CapturedUtc = now,
                 ManifestPath = "v1/saves/demo/" + status + "/manifest.json", Locations = [new SaveLocation { Id = "demo-root", BaseKind = SaveBaseKind.GameRoot, RelativePath = "savedata" }] }
         }).ToList();
         Settings.LibraryMappings.Add(new PendingLibraryMapping

@@ -453,7 +453,7 @@ public sealed partial class BackupCoordinator
                 Guid? target = matching != null ? matching.Targets[save.Game.Id] : null;
                 IReadOnlyList<Guid>? excluded = matching == null ? null
                     : target == null ? localGames.Select(g => g.Id).ToList() : Array.Empty<Guid>();
-                await Pending.StageAsync(profile, save, archive, ct, excluded, target);
+                await Pending.StageAsync(profile, save, archive, ct, excluded, target, snapshot);
             }
             if (matching != null)
             {
