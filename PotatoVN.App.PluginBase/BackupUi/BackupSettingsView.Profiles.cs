@@ -197,8 +197,8 @@ public sealed partial class BackupSettingsView
         _loading = false;
         _deleteChannel.Visibility = saved ? Visibility.Visible : Visibility.Collapsed;
         _repositoryNote.Text = profile?.RepositoryFolder == "PotatoVN_Data" && string.IsNullOrEmpty(profile.RemotePath)
-            ? "备份目录：PotatoVN_Data"
-            : $"备份目录：{(string.IsNullOrEmpty(profile?.RemotePath) ? "" : profile.RemotePath.TrimEnd('/', '\\') + "/")}{profile?.RepositoryFolder}";
+            ? "云端备份目录：PotatoVN_Data"
+            : $"云端备份目录：{(string.IsNullOrEmpty(profile?.RemotePath) ? "" : profile.RemotePath.TrimEnd('/', '\\') + "/")}{profile?.RepositoryFolder}";
         _googleConfigured.Text = profile?.Kind == ProviderKind.GoogleDrive && !string.IsNullOrWhiteSpace(profile.ClientId)
             ? "已保存应用配置，可粘贴新 JSON 替换。" : "尚未导入应用配置。";
         _googleConfigured.Visibility = string.IsNullOrWhiteSpace(profile?.ClientId) ? Visibility.Collapsed : Visibility.Visible;

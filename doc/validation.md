@@ -10,6 +10,12 @@
 - 2026-11-10 的 WinUI 主插件 x64 Release 已成功编译并生成 `.pvnplugin.zip`，编译未报告警告或错误。最终包 924,012 字节、31 个文件项，ZIP CRC 全部通过；主 DLL、核心 DLL 和 PRI 与本轮编译产物的 SHA-256 一致，共享宿主程序集未打入插件包。
   安装包 SHA-256：`F262D082010918D1B60C4037D3C67DB88A6DF471A628552E40F05C720E14DDD6`。
 
+## 本机插件目录与旧数据迁移（2026-11-19）
+
+- 只读核实商店版的实际插件目录位于包族 LocalState 的 Plugins 下，旧数据位于同一包族的 LocalCache/Local 下。兼容层从 IPluginService.PluginDir 取得路径，使用独立于安装目录的插件 ID 数据目录。
+- HostInteropChecks 共 12 项通过。新增合成检查覆盖旧 MSIX 路径与中断重试、跨盘迁移、原生导入 ZIP 排除本插件状态和临时文件，以及替换 LocalState 后从 ImportBackup 接回状态。LocalWorkCleanupChecks 共 3 项通过，x64 Release 编译通过。
+- 真实商店版升级后的迁移、资源管理器打开和恢复重启仍待现场验收。
+
 ## 宿主兼容处理
 
 源代码审查确认原生导出会遗漏已迁移至 LiteDB `homepage_list` 的布局，因此兼容层补充该数据，并在导入数据库中恢复。

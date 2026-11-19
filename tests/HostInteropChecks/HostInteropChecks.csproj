@@ -9,5 +9,6 @@
     <Compile Include="../../PotatoVN.App.PluginBase/Backup/HostJsonWriter.cs" Link="HostJsonWriter.cs" />
     <Compile Include="../../PotatoVN.App.PluginBase/Backup/HostSettingsAccess.cs" Link="HostSettingsAccess.cs" />
     <Compile Include="../../PotatoVN.App.PluginBase/Backup/HostDatabaseReader.cs" Link="HostDatabaseReader.cs" />
+    <Compile Include="../../PotatoVN.App.PluginBase/Backup/PluginStorage.cs" Link="PluginStorage.cs" />
   </ItemGroup>
 </Project>

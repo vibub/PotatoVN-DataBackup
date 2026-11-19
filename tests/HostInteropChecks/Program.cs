@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Reflection;
 using System.Text.Json.Nodes;
 using System.Runtime.Loader;
@@ -93,13 +94,108 @@ try
         Console.WriteLine("PASS host-context export and rollback capture preserve nested settings and unset values");
     }
     finally { jsonContext.Unload(); }
-    Console.WriteLine("PASS 8 host interop checks; synthetic data only");
+    CheckPluginStorage(root);
+    int checks = CheckCrossVolumePluginStorage(root) ? 12 : 11;
+    Console.WriteLine($"PASS {checks} host interop checks; synthetic data only");
     return 0;
 }
 finally
 {
     string parent = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "PotatoVNHostInteropChecks")) + Path.DirectorySeparatorChar;
     if (Path.GetFullPath(root).StartsWith(parent, StringComparison.OrdinalIgnoreCase)) Directory.Delete(root, true);
+}
+static void CheckPluginStorage(string root)
+{
+    string host = Path.Combine(root, "LocalState");
+    string plugins = Path.Combine(host, "Plugins");
+    string localAppData = Path.Combine(root, "AppData", "Local");
+    string cache = Path.Combine(root, "Package", "LocalCache");
+    string normalTemp = Path.Combine(root, "TempState");
+    Guid pluginId = Guid.NewGuid();
+    string nominal = PluginStorage.FindLegacyRoot(host, localAppData, cache);
+    string legacy = Path.Combine(cache, "Local", "PotatoVN-DataBackup", Path.GetFileName(nominal));
+    Put(legacy, "settings.json", "保留设备ID和渠道");
+    Put(legacy, "secrets/fixture.bin", "合成DPAPI文件");
+    Put(legacy, "pending/tasks.json", "待恢复索引");
+    Put(legacy, "pending/archives/fixture.zip", "待恢复文件");
+    Put(legacy, "rollback/save", "原始存档");
+    Put(legacy, "import/withdrawn-import.zip", "撤回的原生导入文件");
+    Put(legacy, "work/transient", "旧临时导出");
+    Put(legacy, "host-temp/leave-here", "宿主兼容临时目录");
+    Put(plugins, "插件安装目录/fixture.dll", "插件安装资源");
+    Check(PluginStorage.FindLegacyRoot(host, localAppData, cache) == legacy, "未定位商店版重定向的旧目录");
+
+    var storage = new PluginStorage(plugins, pluginId, legacy);
+    string staging = storage.Root + ".migrating";
+    Directory.CreateDirectory(staging);
+    Directory.Move(Path.Combine(legacy, "pending"), Path.Combine(staging, "pending"));
+    storage.Initialize(host, normalTemp);
+    Check(storage.Root == Path.Combine(plugins, pluginId + ".data") &&
+          File.ReadAllText(Path.Combine(storage.Root, "settings.json")) == "保留设备ID和渠道" &&
+          File.Exists(Path.Combine(storage.Root, "secrets/fixture.bin")) &&
+          File.Exists(Path.Combine(storage.Root, "pending/archives/fixture.zip")) &&
+          File.Exists(Path.Combine(storage.Root, "rollback/save")) &&
+          File.Exists(Path.Combine(storage.Root, "import/withdrawn-import.zip")),
+        "迁移重试后缺失设置、凭据或恢复资料");
+    Check(!File.Exists(Path.Combine(legacy, "settings.json")) &&
+          Directory.Exists(Path.Combine(legacy, "work")) && Directory.Exists(Path.Combine(legacy, "host-temp")) &&
+          !Directory.Exists(Path.Combine(storage.Root, "work")) && !Directory.Exists(staging),
+        "迁移留下重复资料，或带入旧临时目录");
+    storage.Initialize(host, normalTemp);
+    Console.WriteLine("PASS stable host plugin directory and resumable migration of legacy MSIX state");
+
+    Put(storage.Root, "settings-restore.json", "恢复标记");
+    Put(storage.Root, "work/prepare-import/prepared.zip", "本次导入临时文件");
+    string importPackage = Path.Combine(root, "plugin-installation-only.zip");
+    using (var zip = ZipFile.Open(importPackage, ZipArchiveMode.Create))
+        foreach (string file in storage.FilesForImport())
+            zip.CreateEntryFromFile(file, "Plugins/" + Path.GetRelativePath(plugins, file).Replace('\\', '/'));
+    using (var zip = ZipFile.OpenRead(importPackage))
+        Check(zip.Entries.Single().FullName == "Plugins/插件安装目录/fixture.dll", "原生导入包含插件私有状态或遗漏安装文件");
+    Console.WriteLine("PASS native import archive excludes private state and its own temporary files");
+
+    // 模拟兼容重启器设置了外部 Temp，导入后又由平常的宿主进程启动。
+    Directory.CreateDirectory(storage.ExternalTempRoot);
+    string backup = Path.Combine(storage.ExternalTempRoot, "ImportBackup");
+    Directory.Move(host, backup);
+    ZipFile.ExtractToDirectory(importPackage, host);
+    storage.Initialize(host, normalTemp);
+    Check(File.ReadAllText(Path.Combine(storage.Root, "settings-restore.json")) == "恢复标记" &&
+        File.Exists(Path.Combine(storage.Root, "pending/archives/fixture.zip")) &&
+        File.Exists(Path.Combine(storage.Root, "secrets/fixture.bin")) &&
+        File.Exists(Path.Combine(plugins, "插件安装目录/fixture.dll")) &&
+        !File.Exists(Path.Combine(storage.Root, "work/prepare-import/prepared.zip")) &&
+        File.Exists(Path.Combine(backup, "Plugins", pluginId + ".data", "work/prepare-import/prepared.zip")),
+        "原生导入后没有接回数据，或把本次临时导出接回");
+    Console.WriteLine("PASS private state survives native LocalState replacement and external Temp fallback");
+
+    static void Put(string directory, string name, string value)
+    {
+        string path = Path.Combine(directory, name);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, value);
+    }
+}
+static bool CheckCrossVolumePluginStorage(string root)
+{
+    if (string.Equals(Path.GetPathRoot(root), Path.GetPathRoot(AppContext.BaseDirectory), StringComparison.OrdinalIgnoreCase))
+        return false;
+
+    string portable = Path.Combine(AppContext.BaseDirectory, "plugin-storage-check-" + Guid.NewGuid().ToString("N"));
+    string legacy = Path.Combine(root, "legacy-cross-volume");
+    string pending = Path.Combine("pending", "archives", "fixture.zip");
+    Directory.CreateDirectory(Path.Combine(legacy, "pending", "archives"));
+    File.WriteAllText(Path.Combine(legacy, pending), "跨盘保留待恢复存档");
+    try
+    {
+        var storage = new PluginStorage(Path.Combine(portable, "Plugins"), Guid.NewGuid(), legacy);
+        storage.Initialize(portable, Path.Combine(root, "TempState"));
+        Check(File.ReadAllText(Path.Combine(storage.Root, pending)) == "跨盘保留待恢复存档" &&
+            !Directory.Exists(Path.Combine(legacy, "pending")), "跨盘迁移未完整保存，或发布后留下重复存档");
+        Console.WriteLine("PASS cross-volume migration publishes all state before removing source copies");
+        return true;
+    }
+    finally { if (Directory.Exists(portable)) Directory.Delete(portable, recursive: true); }
 }
 static void Check(bool condition, string message)
 {

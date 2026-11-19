@@ -6,7 +6,6 @@ using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.Loader;
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -32,14 +31,16 @@ public sealed partial class PotatoHostAdapter : IBackupHost
     private readonly Assembly _hostAssembly;
     private readonly object _settings;
     private readonly HostSettingsAccess _portableSettings;
-    private readonly string _stateRoot;
+    private readonly string _pluginsRoot;
+    private readonly PluginStorage _storage;
     public string DataRoot { get; }
-    public string StateRoot => _stateRoot;
+    public string StateRoot => _storage.Root;
+    private string TemporaryRoot => ((DirectoryInfo)Property(_settings, "TemporaryFolder")).FullName;
 
     // 可迁移的常规设置：不自动收集所有设置，避免包含账户、路径或同步游标。
     public static IReadOnlyList<string> SettingKeys => SoftwareBackupCodec.PortableSettingKeys;
 
-    public PotatoHostAdapter(IPotatoVnApi api)
+    public PotatoHostAdapter(IPotatoVnApi api, Guid pluginId)
     {
         _api = api;
         _dispatcher = DispatcherQueue.GetForCurrentThread()
@@ -49,14 +50,27 @@ public sealed partial class PotatoHostAdapter : IBackupHost
         Assembly jsonAssembly = AssemblyLoadContext.GetLoadContext(_hostAssembly)!.Assemblies.Single(assembly => assembly.GetName().Name == "Newtonsoft.Json");
         _portableSettings = new HostSettingsAccess(_settings, jsonAssembly);
         DataRoot = ((DirectoryInfo)Property(_settings, "LocalFolder")).FullName;
-        string key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Path.GetFullPath(DataRoot).ToUpperInvariant())))[..16];
-        _stateRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PotatoVN-DataBackup", key);
-        Directory.CreateDirectory(_stateRoot);
+        _pluginsRoot = ((DirectoryInfo)Property(Service("GalgameManager.Contracts.Services.IPluginService"), "PluginDir")).FullName;
+        bool packaged = _hostAssembly.GetType("GalgameManager.Helpers.RuntimeHelper")?.GetProperty("IsMSIX")?.GetValue(null) is true;
+        string legacyRoot = PluginStorage.FindLegacyRoot(DataRoot,
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            packaged ? Windows.Storage.ApplicationData.Current.LocalCacheFolder.Path : null);
+        _storage = new PluginStorage(_pluginsRoot, pluginId, legacyRoot);
+    }
+
+    public void InitializeStorage()
+    {
+        _storage.Initialize(DataRoot, TemporaryRoot);
+        try { LocalWorkCleanup.RemoveExpired(_storage.LegacyRoot, DateTimeOffset.UtcNow); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        {
+            _api.Log(Microsoft.UI.Xaml.Controls.InfoBarSeverity.Warning, "清理旧备份临时目录失败：" + error.Message);
+        }
     }
 
     public async Task OpenDataFolderAsync()
     {
-        Windows.Storage.StorageFolder folder = await Windows.Storage.StorageFolder.GetFolderFromPathAsync(_stateRoot);
+        Windows.Storage.StorageFolder folder = await Windows.Storage.StorageFolder.GetFolderFromPathAsync(StateRoot);
         if (!await Windows.System.Launcher.LaunchFolderAsync(folder))
             throw new IOException("无法打开本机数据目录。");
     }
@@ -166,7 +180,7 @@ public sealed partial class PotatoHostAdapter : IBackupHost
 
     public async Task CompletePendingImportAsync()
     {
-        string stateFile = Path.Combine(_stateRoot, "settings-restore.json");
+        string stateFile = Path.Combine(StateRoot, "settings-restore.json");
         if (!File.Exists(stateFile)) return;
         JsonObject state = JsonNode.Parse(await File.ReadAllTextAsync(stateFile))!.AsObject();
         string markerId = state["marker"]!.GetValue<string>();
@@ -191,7 +205,7 @@ public sealed partial class PotatoHostAdapter : IBackupHost
         cancellationToken.ThrowIfCancellationRequested();
         ValidateImport();
         string marker = Guid.NewGuid().ToString("N");
-        string stage = Path.Combine(_stateRoot, "import", marker);
+        string stage = Path.Combine(Path.GetDirectoryName(mergedArchivePath)!, "prepare-import");
         Directory.CreateDirectory(stage);
         string target = Path.Combine(DataRoot, $"DataBackup_{marker}.pvnExport.zip");
         string prepared = Path.Combine(stage, "prepared.zip");
@@ -242,13 +256,11 @@ public sealed partial class PotatoHostAdapter : IBackupHost
             }
             zip.GetEntry("pvn_data.db")?.Delete();
             zip.CreateEntryFromFile(databasePath, "pvn_data.db");
-            string pluginRoot = Path.Combine(DataRoot, "Plugins");
-            if (Directory.Exists(pluginRoot))
-                foreach (string file in Directory.EnumerateFiles(pluginRoot, "*", SearchOption.AllDirectories))
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    zip.CreateEntryFromFile(file, "Plugins/" + Path.GetRelativePath(pluginRoot, file).Replace('\\', '/'));
-                }
+            foreach (string file in _storage.FilesForImport())
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                zip.CreateEntryFromFile(file, "Plugins/" + Path.GetRelativePath(_pluginsRoot, file).Replace('\\', '/'));
+            }
             using StreamWriter writer = new(zip.CreateEntry($"databackup-{marker}.complete").Open());
             writer.Write(marker);
         }
@@ -259,7 +271,7 @@ public sealed partial class PotatoHostAdapter : IBackupHost
             before[item.Key] = await _portableSettings.ReadAsync(item.Key);
             after[item.Key] = item.Value?.DeepClone();
         }
-        string settingsFile = Path.Combine(_stateRoot, "settings-restore.json");
+        string settingsFile = Path.Combine(StateRoot, "settings-restore.json");
         await BackupFiles.WriteJsonAsync(settingsFile, new JsonObject { ["marker"] = marker, ["before"] = before, ["after"] = after }, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         string temporaryTarget = target + ".preparing";
@@ -270,16 +282,21 @@ public sealed partial class PotatoHostAdapter : IBackupHost
             File.Move(temporaryTarget, target); // 同一文件系统内原子发布；半包不能被宿主识别。
         }
         finally { if (File.Exists(temporaryTarget)) File.Delete(temporaryTarget); }
-        string temporaryRoot = ((DirectoryInfo)Property(_settings, "TemporaryFolder")).FullName;
+        string temporaryRoot = TemporaryRoot;
         string dataPrefix = Path.GetFullPath(DataRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         if (Path.GetFullPath(temporaryRoot).TrimEnd(Path.DirectorySeparatorChar).Equals(
                 Path.GetFullPath(DataRoot).TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase) ||
             Path.GetFullPath(temporaryRoot).StartsWith(dataPrefix, StringComparison.OrdinalIgnoreCase))
         {
-            try { await RestartWithExternalTempAsync(target, stage, cancellationToken); }
+            string restartStage = Path.Combine(_storage.RestartRoot, marker);
+            try
+            {
+                Directory.CreateDirectory(restartStage);
+                await RestartWithExternalTempAsync(target, restartStage, cancellationToken);
+            }
             catch (Exception error)
             {
-                try { WithdrawPublishedImport(target, stage, error.ToString()); }
+                try { WithdrawPublishedImport(target, restartStage, error.ToString()); }
                 catch (Exception withdrawalError)
                 {
                     throw new IOException("恢复重启失败，且未能撤回待导入文件；请查看插件导入目录的错误记录。",
@@ -306,7 +323,7 @@ public sealed partial class PotatoHostAdapter : IBackupHost
         await File.WriteAllTextAsync(config, System.Text.Json.JsonSerializer.Serialize(new
         {
             ProcessId = Environment.ProcessId, Executable = executable,
-            DataRoot, TempPath = Path.Combine(_stateRoot, "host-temp"),
+            DataRoot, TempPath = _storage.ExternalTempRoot,
             ErrorFile = Path.Combine(stage, "restart-import-error.txt")
         }), ct);
         ProcessStartInfo start = new("powershell.exe")
@@ -332,7 +349,7 @@ public sealed partial class PotatoHostAdapter : IBackupHost
         string data = Path.GetFullPath(DataRoot).TrimEnd(Path.DirectorySeparatorChar);
         string recovery = Path.GetFullPath(stage);
         if (!string.Equals(Path.GetDirectoryName(source), data, StringComparison.OrdinalIgnoreCase) ||
-            !recovery.StartsWith(Path.GetFullPath(_stateRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
+            !recovery.StartsWith(Path.GetFullPath(_storage.RestartRoot).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar,
                 StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("撤回导入文件的路径不在预期位置。");
         // 先在原卷内改名，确保后续移动失败也不会被普通启动识别为待导入包。

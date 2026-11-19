@@ -29,10 +29,11 @@ public partial class Plugin : IPlugin, IPluginSetting
         TaskCompletionSource<PotatoHostAdapter> completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
         hostApi.InvokeOnMainThread(() =>
         {
-            try { completion.SetResult(new PotatoHostAdapter(hostApi)); }
+            try { completion.SetResult(new PotatoHostAdapter(hostApi, Info.Id)); }
             catch (Exception e) { completion.SetException(e); }
         });
         PotatoHostAdapter host = await completion.Task;
+        await Task.Run(host.InitializeStorage);
         SettingsStore store = new(host.StateRoot);
         var settings = await store.LoadAsync();
         PendingRestoreStore pending = new(host.StateRoot);
