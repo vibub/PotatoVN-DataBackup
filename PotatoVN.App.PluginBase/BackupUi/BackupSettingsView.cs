@@ -141,8 +141,12 @@ public sealed partial class BackupSettingsView : UserControl
             _feedback.IsOpen = false;
             if (_subscribed) _controller.StateChanged -= ControllerStateChanged;
             _subscribed = false;
-            if (_viewportHost != null) _viewportHost.SizeChanged -= HostSizeChanged;
-            _viewportHost = null;
+            if (_viewportHost != null)
+            {
+                _viewportHost.SizeChanged -= HostSizeChanged;
+                _viewportHost = null;
+                ClearValue(HeightProperty);
+            }
         };
         RefreshStatus();
     }
@@ -194,7 +198,7 @@ public sealed partial class BackupSettingsView : UserControl
     {
         if (_viewportHost == null || _viewportHost.ActualHeight <= 0) return;
         double top = TransformToVisual(_viewportHost).TransformPoint(new Windows.Foundation.Point()).Y;
-        MaxHeight = Math.Max(260, _viewportHost.ActualHeight - Math.Max(0, top) - 12);
+        Height = Math.Max(260, _viewportHost.ActualHeight - Math.Max(0, top) - 12);
     }
 
     private void ControllerStateChanged()

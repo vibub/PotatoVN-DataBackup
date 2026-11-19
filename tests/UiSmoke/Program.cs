@@ -141,11 +141,14 @@ public sealed partial class SmokeApp : Application
                     double scale = host.XamlRoot.RasterizationScale;
                     _window.AppWindow.Resize(new Windows.Graphics.SizeInt32((int)Math.Round(size.Width * scale), (int)Math.Round(size.Height * scale)));
                     await Task.Delay(350);
+                    double? footerBottom = null;
                     for (int index = 0; index < navigation.Items.Count; index++)
                     {
                         navigation.SelectedIndex = index;
                         await Task.Delay(160);
                         ShowLayoutFeedback(view);
+                        TextBlock saveState = Field<TextBlock>(view, "_saveState");
+                        saveState.Visibility = Visibility.Visible;
                         host.UpdateLayout();
                         Button backup = FindButton(view, "立即备份");
                         Button save = FindButton(view, "保存设置");
@@ -154,7 +157,19 @@ public sealed partial class SmokeApp : Application
                         AssertVisible(navigation, hostScroll, "页面导航");
                         AssertVisible(save, hostScroll, "保存设置");
                         AssertVisible(backup, hostScroll, "立即备份");
+                        AssertVisible(saveState, hostScroll, "未保存提示");
                         AssertVisible(feedback, hostScroll, "操作反馈");
+                        Button logs = FindButton(view, "查看日志");
+                        var footerActions = (ActionRow)VisualTreeHelper.GetParent(save);
+                        double currentFooterBottom = PositionY(footerActions, hostScroll) + footerActions.ActualHeight;
+                        footerBottom ??= currentFooterBottom;
+                        Check(Math.Abs(currentFooterBottom - footerBottom.Value) < 1, "切页时底部操作栏应保持同一高度。");
+                        Check(Math.Abs(VerticalCenter(saveState, footerActions) - VerticalCenter(logs, footerActions)) < 1,
+                            "未保存提示应与底部按钮对齐。");
+                        double gap = logs.TransformToVisual(footerActions).TransformPoint(new Windows.Foundation.Point()).X
+                            - backup.TransformToVisual(footerActions).TransformPoint(new Windows.Foundation.Point()).X - backup.ActualWidth;
+                        Check(Math.Abs(gap - 8) < 1, "隐藏取消按钮后不应留下额外间距。");
+                        AssertActionRowsAligned(view);
                         Check(hostScroll.ScrollableHeight < 2, "设置控件撑高了宿主滚动区域，反馈和操作会被卷走。");
                         AssertPageAlignment(contentScroll, save, index);
                         Check(contentScroll.VerticalOffset <= 1 && contentScroll.ViewportHeight > 0,
@@ -221,6 +236,9 @@ public sealed partial class SmokeApp : Application
                             AssertVisible(navigation, hostScroll, "日志展开时的页面导航");
                             AssertVisible(save, hostScroll, "日志展开时的保存按钮");
                             AssertVisible(feedback, hostScroll, "日志展开时的操作反馈");
+                            Check(Math.Abs(PositionY(footerActions, hostScroll) + footerActions.ActualHeight - footerBottom.Value) < 1,
+                                "展开日志后底部操作栏应保持原位。");
+                            AssertActionRowsAligned(view);
                             Check(hostScroll.ScrollableHeight < 2, "展开日志后不应撑高宿主滚动区域。");
                             await CaptureAsync(host, $"settings-{size.Width}x{size.Height}-log-open.png");
                             InvokeButton(FindButton(view, "收起日志"));
@@ -228,6 +246,7 @@ public sealed partial class SmokeApp : Application
                             Check(log.Visibility == Visibility.Collapsed, "收起日志后应恢复设置内容空间。");
                             results.Add($"PASS log-toggle {size.Width}x{size.Height}: recent results visible; navigation/actions/feedback stay in viewport");
                         }
+                        saveState.Visibility = Visibility.Collapsed;
                     }
                     navigation.SelectedIndex = 4;
                     await Task.Delay(120);
@@ -304,6 +323,28 @@ public sealed partial class SmokeApp : Application
 
     private static double PositionY(FrameworkElement element, UIElement viewport) =>
         element.TransformToVisual(viewport).TransformPoint(new Windows.Foundation.Point()).Y;
+
+    private static double VerticalCenter(FrameworkElement element, UIElement viewport) =>
+        PositionY(element, viewport) + element.ActualHeight / 2;
+
+    private static void AssertActionRowsAligned(DependencyObject root)
+    {
+        foreach (ActionRow row in FindAll<ActionRow>(root))
+        {
+            double previousX = double.PositiveInfinity;
+            double lineCenter = 0;
+            foreach (FrameworkElement child in row.Children.OfType<FrameworkElement>())
+            {
+                if (child.Visibility != Visibility.Visible || child.ActualHeight <= 0 || child.ActualWidth <= 0) continue;
+                double x = child.TransformToVisual(row).TransformPoint(new Windows.Foundation.Point()).X;
+                double center = VerticalCenter(child, row);
+                if (x <= previousX) lineCenter = center;
+                Check(Math.Abs(center - lineCenter) < 1,
+                    $"同一操作行的 {child.GetType().Name} 应垂直居中（中心 {center:0.##}，同排 {lineCenter:0.##}）。");
+                previousX = x;
+            }
+        }
+    }
 
     private static void AssertPageAlignment(ScrollViewer scroll, Button save, int pageIndex)
     {
