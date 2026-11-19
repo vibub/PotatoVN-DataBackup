@@ -27,6 +27,8 @@ public sealed partial class SmokeApp
         TextBox search = Field<TextBox>(view, "_gameSearch");
         TextBox saveSearch = Field<TextBox>(view, "_saveGameSearch");
         CheckBox only = Field<CheckBox>(view, "_onlySelectedGames");
+        CheckBox scopeConfigured = Field<CheckBox>(view, "_scopeConfigured");
+        CheckBox scopeUnconfigured = Field<CheckBox>(view, "_scopeUnconfigured");
         CheckBox configured = Field<CheckBox>(view, "_saveGameConfigured");
         CheckBox unconfigured = Field<CheckBox>(view, "_saveGameUnconfigured");
         CheckBox local = Field<CheckBox>(view, "_saveGameLocal");
@@ -84,6 +86,36 @@ public sealed partial class SmokeApp
             localScope.IsChecked = true;
             Check(list.Items.Count == 66 && selected.Count == 32, "两类范围共同选择或手选草稿恢复失败。");
             results.Add("PASS game-category-scope: local/nonlocal independently filter; neither is empty; both include all; hidden selected IDs survive scope switches");
+
+            Guid[] previouslySelected = selected.ToArray();
+            Guid configuredId = added[33].Id;
+            Guid emptyConfigId = added[34].Id;
+            controller.Settings.SaveConfigs.Add(new GameSaveConfig { GameId = configuredId, Locations = [new SaveLocation { RelativePath = "save" }] });
+            controller.Settings.SaveConfigs.Add(new GameSaveConfig { GameId = emptyConfigId });
+            search.Text = "甲组";
+            scopeConfigured.IsChecked = true;
+            Check(list.Items.Count == 0, "搜索与存档状态应取交集。");
+            search.Text = "乙组";
+            await WaitForUiAsync(() => list.Items.Count == 1, "已配置存档筛选未更新。");
+            Check(((GameIdentity)((ListViewItem)list.Items[0]).Tag).Id == configuredId,
+                "已配置存档只包含有存档位置的游戏。");
+            InvokeButton(FindButton(view, "选中筛选结果"));
+            Check(selected.SetEquals(previouslySelected.Append(configuredId)), "批量选择应加入符合筛选的游戏并保留隐藏勾选。");
+            only.IsChecked = true;
+            Check(list.Items.Count == 1, "只看已选可与存档状态同时使用。");
+            InvokeButton(FindButton(view, "取消筛选结果选择"));
+            Check(selected.SetEquals(previouslySelected) && list.Items.Count == 0, "批量取消应只影响当前筛选结果。");
+
+            only.IsChecked = false;
+            scopeUnconfigured.IsChecked = true;
+            Check(scopeConfigured.IsChecked == false && list.Items.Count == 31 &&
+                list.Items.OfType<ListViewItem>().Any(item => ((GameIdentity)item.Tag).Id == emptyConfigId),
+                "未配置存档应取消另一状态并包含无存档位置的游戏。");
+            scopeUnconfigured.IsChecked = false;
+            controller.Settings.SaveConfigs.RemoveAll(config => config.GameId == configuredId || config.GameId == emptyConfigId);
+            search.Text = "";
+            await WaitForUiAsync(() => list.Items.Count == 66, "清除筛选后应重新显示当前范围的全部游戏。");
+            results.Add("PASS scope-save-filters: configured and unconfigured are exclusive; search and selected-only combine; bulk actions preserve hidden selections");
 
             ListView saveGames = Field<ListView>(view, "_saveGame");
             saveSearch.Text = "甲组";
@@ -182,6 +214,8 @@ public sealed partial class SmokeApp
             unconfigured.IsChecked = false;
             local.IsChecked = false;
             only.IsChecked = false;
+            scopeConfigured.IsChecked = false;
+            scopeUnconfigured.IsChecked = false;
             localScope.IsChecked = true;
             remoteScope.IsChecked = true;
             specific.IsChecked = originalSpecific;

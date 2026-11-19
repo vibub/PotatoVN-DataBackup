@@ -26,7 +26,9 @@ public sealed partial class BackupSettingsView
     private readonly ListView _gameSelection = new() { SelectionMode = ListViewSelectionMode.Multiple, IsMultiSelectCheckBoxEnabled = true, MaxHeight = 260 };
     private readonly HashSet<Guid> _selectedGameIds = new();
     private readonly TextBox _gameSearch = TextInput("搜索备份游戏", "游戏名、目录或来源 ID");
-    private readonly CheckBox _onlySelectedGames = new() { Content = "只看已选" };
+    private readonly CheckBox _onlySelectedGames = new() { Content = "只看已选", MinWidth = 0 };
+    private readonly CheckBox _scopeConfigured = new() { Content = "已配置存档", MinWidth = 0 };
+    private readonly CheckBox _scopeUnconfigured = new() { Content = "未配置存档", MinWidth = 0 };
     private readonly StackPanel _manualGameScope = Stack(8);
     private readonly TextBlock _gameSelectionEmpty = Note("");
     private bool _refreshingGameSelection;
@@ -138,8 +140,13 @@ public sealed partial class BackupSettingsView
         _gameSearch.TextChanged += (_, _) => RefreshGameSelection();
         _onlySelectedGames.Checked += (_, _) => RefreshGameSelection();
         _onlySelectedGames.Unchecked += (_, _) => RefreshGameSelection();
+        var filters = Row();
+        filters.Children.Add(_onlySelectedGames);
+        filters.Children.Add(_scopeConfigured);
+        filters.Children.Add(_scopeUnconfigured);
+        BindSaveStatusFilters(_scopeConfigured, _scopeUnconfigured, () => RefreshGameSelection());
         _manualGameScope.Children.Add(_gameSearch);
-        _manualGameScope.Children.Add(_onlySelectedGames);
+        _manualGameScope.Children.Add(filters);
         _manualGameScope.Children.Add(_gameSelection);
         _manualGameScope.Children.Add(_gameSelectionEmpty);
         var gameActions = Row();
@@ -174,10 +181,18 @@ public sealed partial class BackupSettingsView
         UpdateGameScope();
     }
 
-    private IEnumerable<GameIdentity> FilteredScopeGames() =>
-        _scopeGames.Where(game => IncludesGameCategory(game) && GameSearch.Matches(_gameSearch.Text, game) &&
-            (_onlySelectedGames.IsChecked != true || _selectedGameIds.Contains(game.Id)))
+    private IEnumerable<GameIdentity> FilteredScopeGames()
+    {
+        bool onlyConfigured = _scopeConfigured.IsChecked == true;
+        HashSet<Guid>? configuredGames = onlyConfigured || _scopeUnconfigured.IsChecked == true
+            ? _controller.Settings.SaveConfigs.Where(config => config.Locations.Count > 0).Select(config => config.GameId).ToHashSet()
+            : null;
+
+        return _scopeGames.Where(game => IncludesGameCategory(game) && GameSearch.Matches(_gameSearch.Text, game) &&
+            (_onlySelectedGames.IsChecked != true || _selectedGameIds.Contains(game.Id)) &&
+            (configuredGames == null || configuredGames.Contains(game.Id) == onlyConfigured))
             .OrderBy(game => game.Name, StringComparer.CurrentCultureIgnoreCase);
+    }
 
     private void SelectFilteredGames(bool select)
     {

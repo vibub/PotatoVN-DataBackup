@@ -124,6 +124,7 @@ public sealed partial class BackupSettingsView
             _controller.Settings.SaveConfigs.First(c => c.GameId == gameId).Locations.Remove(choice.Location);
             _controller.Settings.CustomSavePaths.Remove(choice.Location.Id);
             await _controller.SaveSettingsAsync();
+            RefreshGameSelection();
             RefreshSaveLocations();
         }, successMessage: "已停止备份所选位置。", canExecute: () => _saveRoots.SelectedItem != null, style: "SubtleButtonStyle"));
         locations.Children.Add(actions);
@@ -139,20 +140,24 @@ public sealed partial class BackupSettingsView
             RefreshSaveLocations();
         };
         _saveGameSearch.TextChanged += (_, _) => RenderSaveGameChoices();
-        void FilterChanged(object sender, RoutedEventArgs args)
-        {
-            if (ReferenceEquals(sender, _saveGameConfigured) && _saveGameConfigured.IsChecked == true)
-                _saveGameUnconfigured.IsChecked = false;
-            else if (ReferenceEquals(sender, _saveGameUnconfigured) && _saveGameUnconfigured.IsChecked == true)
-                _saveGameConfigured.IsChecked = false;
-            RenderSaveGameChoices();
-        }
-        foreach (CheckBox filter in new[] { _saveGameConfigured, _saveGameUnconfigured, _saveGameLocal })
-        {
-            filter.Checked += FilterChanged;
-            filter.Unchecked += FilterChanged;
-        }
+        BindSaveStatusFilters(_saveGameConfigured, _saveGameUnconfigured, RenderSaveGameChoices);
+        _saveGameLocal.Checked += (_, _) => RenderSaveGameChoices();
+        _saveGameLocal.Unchecked += (_, _) => RenderSaveGameChoices();
         RefreshSaveGameChoices();
+    }
+
+    private static void BindSaveStatusFilters(CheckBox configured, CheckBox unconfigured, Action refresh)
+    {
+        void ClearOtherOrRefresh(CheckBox other)
+        {
+            if (other.IsChecked == true) other.IsChecked = false;
+            else refresh();
+        }
+
+        configured.Checked += (_, _) => ClearOtherOrRefresh(unconfigured);
+        unconfigured.Checked += (_, _) => ClearOtherOrRefresh(configured);
+        configured.Unchecked += (_, _) => refresh();
+        unconfigured.Unchecked += (_, _) => refresh();
     }
 
     private async Task AddPickedSaveLocationAsync(bool isFile)
@@ -396,6 +401,7 @@ public sealed partial class BackupSettingsView
         }
         if (existing == null) config.Locations.Add(location);
         await _controller.SaveSettingsAsync();
+        if (existing == null) RefreshGameSelection();
         RefreshSaveLocations();
     }
 
