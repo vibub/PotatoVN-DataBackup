@@ -17,11 +17,17 @@ public sealed partial class SmokeApp
         ListView games = Field<ListView>(view, "_saveGame");
         GameIdentity game = controller.GetGames()[0];
         games.SelectedItem = games.Items.OfType<ListViewItem>().Single(row => ((GameIdentity)row.Tag).Id == game.Id);
-        InvokeButton(FindButton(view, "配置存档位置"));
         ScrollViewer page = Field<ScrollViewer>(view, "_pageScroll");
+        page.ChangeView(null, 0, null, true);
+        await WaitForUiAsync(() => page.VerticalOffset <= 1, "检查存档跳转前应回到页首。");
+        InvokeButton(FindButton(view, "配置存档位置"));
         TextBox search = Field<TextBox>(view, "_saveGameSearch");
-        await WaitForUiAsync(() => page.VerticalOffset > 0 && search.FocusState != FocusState.Unfocused,
-            "首屏入口应滚动到存档配置，并将焦点放到搜索框。");
+        await WaitForUiAsync(() =>
+        {
+            double listTop = PositionY(games, page);
+            return page.VerticalOffset > 0 && search.FocusState != FocusState.Unfocused &&
+                listTop >= -1 && listTop + Math.Min(games.ActualHeight, 40) <= page.ActualHeight;
+        }, "首屏入口应显示游戏列表，并将焦点放到搜索框。");
         search.Text = game.Name;
         navigation.SelectedIndex = 2;
         await Task.Delay(120);
@@ -98,7 +104,8 @@ public sealed partial class SmokeApp
             Equals(ToolTipService.GetToolTip(longTitle), longName.Name), "长游戏标题应限制为两行并保留完整工具提示。");
         ScrollViewer savePage = Field<ScrollViewer>(view, "_pageScroll");
         InvokeButton(FindButton(view, "配置存档位置"));
-        await Task.Delay(180);
+        await WaitForUiAsync(() => PositionY(games, savePage) >= -1 &&
+            PositionY(games, savePage) + 40 <= savePage.ActualHeight, "跳转后应能看到存档游戏列表。");
         await CaptureAsync(host, "save-location-detail-light.png");
         savePage.ChangeView(null, 0, null, true);
         string broken = Path.Combine(Program.Output, "invalid-cover.jpg");
@@ -132,11 +139,13 @@ public sealed partial class SmokeApp
                 _window!.AppWindow.Resize(new Windows.Graphics.SizeInt32((int)(width * scale), (int)(760 * scale)));
                 await Task.Delay(180);
                 ListView pending = Field<ListView>(view, "_pendingList");
-                ListViewItem row = pending.Items.OfType<ListViewItem>().Single(item => ((PendingRestore)item.Tag).Id == entry.Id);
+                ListViewItem row = pending.Items.OfType<ListViewItem>().Single(item =>
+                    ((StackPanel)item.Tag).Children.OfType<CheckBox>().Any(check => ((PendingRestore)check.Tag).Id == entry.Id));
+                CheckBox location = ((StackPanel)row.Tag).Children.OfType<CheckBox>().Single(check => ((PendingRestore)check.Tag).Id == entry.Id);
                 double rowTop = pending.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point()).Y + scroll.VerticalOffset;
                 scroll.ChangeView(null, Math.Max(0, rowTop - 50), null, true);
                 await Task.Delay(180);
-                TextBlock text = FindAll<TextBlock>((DependencyObject)row.Content).Single(block => AutomationProperties.GetName(block) == path);
+                TextBlock text = FindAll<TextBlock>((DependencyObject)location.Content).Single(block => AutomationProperties.GetName(block) == path);
                 await WaitForUiAsync(() => text.ActualWidth > 0, "存档路径尚未排版。");
                 await CaptureAsync(host, $"pending-hierarchy-{width}-before-check.png");
                 Check(text.FontSize == 12 && text.Text.Contains('…') && text.Text.StartsWith(Path.GetPathRoot(path)!) && text.Text.EndsWith("slot001.sav"),
@@ -144,9 +153,8 @@ public sealed partial class SmokeApp
                 Check((ToolTipService.GetToolTip(text) as string) == path && row.Margin.Bottom >= 8,
                     "完整路径应能在工具提示中查看，条目之间应留出间距。");
                 TextBlock gameTitle = FindAll<TextBlock>((DependencyObject)row.Content).Single(block => block.Text == entry.Manifest.Game.Name);
-                Border state = FindAll<Border>((DependencyObject)row.Content).First(border => !string.IsNullOrEmpty(AutomationProperties.GetName(border)));
-                Check(Math.Abs(PositionY(gameTitle, host) - PositionY(state, host)) < 3,
-                    "状态标签应与简短游戏名称同行。");
+                Border state = FindAll<Border>((DependencyObject)location.Content).First(border => !string.IsNullOrEmpty(AutomationProperties.GetName(border)));
+                Check(PositionY(gameTitle, host) < PositionY(state, host), "每个游戏的存档状态应显示在对应版本下面。");
                 double top = pending.TransformToVisual(scroll).TransformPoint(new Windows.Foundation.Point()).Y + scroll.VerticalOffset;
                 scroll.ChangeView(null, Math.Max(0, top - 50), null, true);
                 await Task.Delay(100);

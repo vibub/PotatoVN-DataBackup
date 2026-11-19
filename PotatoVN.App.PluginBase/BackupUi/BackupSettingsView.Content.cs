@@ -50,9 +50,14 @@ public sealed partial class BackupSettingsView
         SetButtonStyle(goToSaves, "SubtleButtonStyle");
         goToSaves.Click += (_, _) =>
         {
-            double top = _saveLocationHeading.TransformToVisual(_pageScroll).TransformPoint(new Windows.Foundation.Point()).Y;
-            _pageScroll.ChangeView(null, Math.Max(0, _pageScroll.VerticalOffset + top - _pageScroll.Padding.Top), null, true);
             _saveGameSearch.Focus(FocusState.Programmatic);
+            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            {
+                if (_navigation.SelectedIndex != 1) return;
+                double top = _saveLocationHeading.TransformToVisual(_pageScroll).TransformPoint(new Windows.Foundation.Point()).Y;
+                double offset = _pageScroll.VerticalOffset + top - _pageScroll.Padding.Top;
+                _pageScroll.ChangeView(null, Math.Clamp(offset, 0, _pageScroll.ScrollableHeight), null, true);
+            });
         };
         header.Children.Add(goToSaves);
         panel.Children.Add(header);

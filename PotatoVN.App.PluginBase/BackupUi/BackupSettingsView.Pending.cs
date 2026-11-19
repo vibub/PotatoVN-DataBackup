@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using PotatoVN.Backup.Core;
 using PotatoVN.Backup.Core.Engine;
@@ -17,29 +18,37 @@ public sealed partial class BackupSettingsView
     private readonly TextBlock _pendingSelection = SectionHeading("");
     private readonly TextBlock _pendingRestoreHint = SecondaryText("");
     private readonly TextBlock _pendingEmpty = Note("");
-    private readonly StackPanel _pendingGameFilters = Stack(0);
     private readonly StackPanel _pendingVersionFilters = Stack(0);
+    private readonly DropDownButton _pendingVersionFilterButton = new();
+    private readonly Dictionary<Guid, string> _pendingGameVersions = new();
     private readonly Dictionary<RestoreStatus, CheckBox> _pendingStatusFilters = new();
     private readonly TextBox _pendingSearch = TextInput("搜索", "游戏、渠道、备份时间或目标路径");
     private readonly ListView _pendingList = new()
     {
-        SelectionMode = ListViewSelectionMode.Multiple,
-        IsMultiSelectCheckBoxEnabled = true,
+        SelectionMode = ListViewSelectionMode.None,
         HorizontalContentAlignment = HorizontalAlignment.Stretch,
         MaxHeight = 440
     };
     private bool _buildingPendingFilters;
     private string? _pendingRestoreBlocker;
+    private PendingRestore[] _selectedPending = [];
+
+    private sealed record PendingVersionChoice(string Key, string Label, DateTimeOffset Time, bool IsLegacy, PendingRestore[] Locations);
 
     private StackPanel BuildPendingTab()
     {
         var panel = Stack();
         panel.Children.Add(SectionHeading("待恢复存档"));
-        var toolbar = Row();
+        var toolbar = new Grid { ColumnSpacing = 8, HorizontalAlignment = HorizontalAlignment.Left };
+        toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        toolbar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         _pendingSummary.VerticalAlignment = VerticalAlignment.Center;
         toolbar.Children.Add(_pendingSummary);
-        toolbar.Children.Add(ActionButton("刷新状态", async ct => await _controller.RefreshPendingAsync(ct),
-            successMessage: "待恢复存档已刷新。", style: "SubtleButtonStyle"));
+        Button refresh = ActionButton("刷新状态", async ct => await _controller.RefreshPendingAsync(ct),
+            successMessage: "待恢复存档已刷新。", style: "SubtleButtonStyle");
+        refresh.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(refresh, 1);
+        toolbar.Children.Add(refresh);
         panel.Children.Add(toolbar);
         panel.Children.Add(_pendingSearch);
         var statusFilters = Row();
@@ -49,9 +58,18 @@ public sealed partial class BackupSettingsView
             _pendingStatusFilters.Add(status, check);
             statusFilters.Children.Add(check);
         }
+        _pendingVersionFilterButton.Content = "按备份版本筛选";
+        _pendingVersionFilterButton.Flyout = new Flyout
+        {
+            Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedLeft,
+            Content = new ScrollViewer
+            {
+                Content = _pendingVersionFilters, MaxHeight = 260, MaxWidth = 400,
+                HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled
+            }
+        };
+        statusFilters.Children.Add(_pendingVersionFilterButton);
         panel.Children.Add(statusFilters);
-        panel.Children.Add(ResponsiveColumns(PendingFilterGroup("按游戏筛选", _pendingGameFilters),
-            PendingFilterGroup("按备份版本筛选", _pendingVersionFilters)));
         var results = Stack(8);
         results.Children.Add(_pendingList);
         results.Children.Add(_pendingEmpty);
@@ -61,11 +79,13 @@ public sealed partial class BackupSettingsView
         var actions = Row();
         sidebar.Children.Add(actions);
         actions.Children.Add(ActionButton("设置所选目标…", async ct => await ConfigurePendingTargetAsync(ct), successMessage: "恢复位置已保存。",
-            canExecute: () => _pendingList.SelectedItems.Count == 1 && ((PendingRestore)((ListViewItem)_pendingList.SelectedItems[0]).Tag).IsBusy == false));
+            canExecute: () => _selectedPending is [{ IsBusy: false }]));
         actions.Children.Add(ActionButton("恢复所选存档", async ct =>
         {
             Guid[] ids = SelectedPendingIds();
             if (ids.Length == 0) throw new InvalidOperationException("请先选择要恢复的存档位置。");
+            var versions = PendingLocationChecks().Where(check => check.IsChecked == true)
+                .ToDictionary(check => ((PendingRestore)check.Tag).Id, check => (string)check.DataContext);
             await _controller.RefreshPendingAsync(ct);
             PendingRestore[] entries = _controller.GetPending().Where(p => ids.Contains(p.Id)).ToArray();
             if (entries.Length != ids.Length) throw new InvalidOperationException("所选存档已变化，请重新选择。");
@@ -73,16 +93,16 @@ public sealed partial class BackupSettingsView
             var body = Stack(8);
             body.Children.Add(Note("内容相同的存档会跳过；内容不同时，用所选版本替换目标位置。恢复前会保存当前存档，写入失败时回滚。"));
             foreach (PendingRestore entry in entries)
-                body.Children.Add(Note($"{entry.Manifest.Game.Name} · {entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss}\n→ {entry.TargetPath}"));
+                body.Children.Add(Note($"{entry.Manifest.Game.Name} · {versions[entry.Id]}\n→ {entry.TargetPath}"));
             if (await DialogAsync("确认存档恢复位置", new ScrollViewer { Content = body, MaxHeight = 440 }, "恢复所选存档") != ContentDialogResult.Primary)
                 return;
             await _controller.RestorePendingAsync(ids, ct);
-        }, canExecute: () => _pendingRestoreBlocker == null && _pendingList.SelectedItems.Count > 0, style: "AccentButtonStyle"));
+        }, canExecute: () => _pendingRestoreBlocker == null && _selectedPending.Length > 0, style: "AccentButtonStyle"));
         var selectionActions = Row();
-        selectionActions.Children.Add(ActionButton("全选筛选结果", _ => { _pendingList.SelectAll(); return Task.CompletedTask; },
+        selectionActions.Children.Add(ActionButton("全选筛选结果", _ => { SelectPendingLocations(true); return Task.CompletedTask; },
             canExecute: () => _pendingList.Items.Count > 0, style: "SubtleButtonStyle"));
-        selectionActions.Children.Add(ActionButton("取消选择", _ => { _pendingList.SelectedItems.Clear(); return Task.CompletedTask; },
-            canExecute: () => _pendingList.SelectedItems.Count > 0, style: "SubtleButtonStyle"));
+        selectionActions.Children.Add(ActionButton("取消选择", _ => { SelectPendingLocations(false); return Task.CompletedTask; },
+            canExecute: () => _selectedPending.Length > 0, style: "SubtleButtonStyle"));
         sidebar.Children.Add(selectionActions);
         Border selectionPanel = Surface(sidebar);
         selectionPanel.VerticalAlignment = VerticalAlignment.Top;
@@ -100,19 +120,10 @@ public sealed partial class BackupSettingsView
         cleanupActions.Children.Add(ActionButton("清空待恢复存档…", async ct => await ClearPendingWithConfirmationAsync(_controller.GetPending().Select(p => p.Id).ToArray(), ct)));
         cleanup.Children.Add(cleanupActions);
         panel.Children.Add(new Expander { Header = "管理暂存空间", Content = cleanup, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
-        _pendingList.SelectionChanged += (_, _) => UpdatePendingSelection();
         _pendingSearch.TextChanged += (_, _) => { if (!_buildingPendingFilters) RefreshPendingView(); };
         RefreshPendingView();
         return panel;
     }
-
-    private static Expander PendingFilterGroup(string title, StackPanel options) => new()
-    {
-        Header = title,
-        Content = new ScrollViewer { Content = options, MaxHeight = 180, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled },
-        HorizontalContentAlignment = HorizontalAlignment.Stretch,
-        HorizontalAlignment = HorizontalAlignment.Stretch
-    };
 
     private CheckBox PendingFilter(string key, string label)
     {
@@ -142,20 +153,17 @@ public sealed partial class BackupSettingsView
 
     private void RefreshPendingView()
     {
-        if (_pendingList == null || _buildingPendingFilters) return;
+        if (_buildingPendingFilters) return;
         IReadOnlyList<PendingRestore> entries = _controller.GetPending();
-        var versionGroups = entries.SelectMany(entry => entry.BackupVersions.DefaultIfEmpty(),
-                (entry, version) => (Entry: entry, Version: version))
-            .GroupBy(row => VersionKey(row.Entry.ProfileId, row.Version))
+        var references = entries.SelectMany(entry => entry.BackupVersions.DefaultIfEmpty(),
+            (entry, version) => (Entry: entry, Version: version)).ToArray();
+        var versionGroups = references.GroupBy(row => VersionKey(row.Entry.ProfileId, row.Version))
             .OrderByDescending(group => group.First().Version?.CreatedUtc).ToArray();
         _pendingSummary.Text = $"实际占用 {SizeLabel(_controller.PendingBytes)} · {entries.Select(p => p.Manifest.Game.Id).Distinct().Count()} 个游戏 · {versionGroups.Count(group => group.First().Version != null)} 个备份版本 · {entries.Count} 个存档位置";
         foreach (var (status, check) in _pendingStatusFilters)
             ((TextBlock)check.Content).Text = $"{StateLabel(status)} {entries.Count(p => p.Status == status)}";
 
         _buildingPendingFilters = true;
-        SetPendingFilters(_pendingGameFilters, entries.GroupBy(p => p.Manifest.Game.Id)
-            .OrderBy(group => group.First().Manifest.Game.Name, StringComparer.CurrentCultureIgnoreCase)
-            .Select(group => (group.Key.ToString("N"), group.First().Manifest.Game.Name)));
         SetPendingFilters(_pendingVersionFilters, versionGroups.Select(group =>
         {
             var (entry, version) = group.First();
@@ -164,27 +172,119 @@ public sealed partial class BackupSettingsView
             if (!string.IsNullOrWhiteSpace(version?.DeviceName)) label += " · " + version.DeviceName;
             return (group.Key, $"{label} · {entry.ProfileName} · {games} 个游戏");
         }));
-        HashSet<Guid> selected = SelectedPendingIds().ToHashSet();
-        _pendingList.Items.Clear();
-        HashSet<string> games = CheckedPendingFilters(_pendingGameFilters.Children.OfType<CheckBox>());
         HashSet<string> versions = CheckedPendingFilters(_pendingVersionFilters.Children.OfType<CheckBox>());
+        _pendingVersionFilterButton.Content = versions.Count == 0 ? "按备份版本筛选" : $"按备份版本筛选（{versions.Count}）";
+        _pendingVersionFilterButton.Visibility = versionGroups.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
         HashSet<string> statuses = CheckedPendingFilters(_pendingStatusFilters.Values);
         string search = _pendingSearch.Text.Trim();
-        foreach (PendingRestore entry in entries.OrderBy(p => p.Manifest.Game.Name, StringComparer.CurrentCultureIgnoreCase).ThenByDescending(p => p.Manifest.CapturedUtc))
+        HashSet<Guid> selected = SelectedPendingIds().ToHashSet();
+        _pendingList.Items.Clear();
+        foreach (var game in references.Where(row =>
+                     (statuses.Count == 0 || statuses.Contains(row.Entry.Status.ToString())) &&
+                     (versions.Count == 0 || versions.Contains(VersionKey(row.Entry.ProfileId, row.Version))) &&
+                     PendingSearchMatches(row.Entry, row.Version, search))
+                 .GroupBy(row => row.Entry.Manifest.Game.Id)
+                 .OrderBy(group => group.First().Entry.Manifest.Game.Name, StringComparer.CurrentCultureIgnoreCase))
         {
-            if (games.Count > 0 && !games.Contains(entry.Manifest.Game.Id.ToString("N"))) continue;
-            if (versions.Count > 0 && !entry.BackupVersions.DefaultIfEmpty()
-                    .Any(version => versions.Contains(VersionKey(entry.ProfileId, version)))) continue;
-            if (statuses.Count > 0 && !statuses.Contains(entry.Status.ToString())) continue;
-            string description = $"{entry.Manifest.Game.Name} {entry.ProfileName} {BackupTime(entry.Manifest.CapturedUtc)} {entry.TargetPath}";
-            if (search.Length > 0) description += " " + string.Join(" ", entry.BackupVersions.Select(v => BackupTime(v.CreatedUtc)));
-            if (search.Length > 0 && !description.Contains(search, StringComparison.CurrentCultureIgnoreCase)) continue;
-            var content = Stack(8);
+            var choices = game.GroupBy(row => row.Version == null
+                    ? $"{row.Entry.ProfileId:N}/legacy:{row.Entry.Manifest.ManifestPath}"
+                    : VersionKey(row.Entry.ProfileId, row.Version))
+                .Select(group =>
+                {
+                    var (entry, version) = group.First();
+                    DateTimeOffset time = version?.CreatedUtc ?? entry.Manifest.CapturedUtc;
+                    string label = version == null ? $"旧暂存 · {BackupTime(time)}" : BackupTime(time);
+                    if (!string.IsNullOrWhiteSpace(version?.DeviceName)) label += " · " + version.DeviceName;
+                    return new PendingVersionChoice(group.Key, $"{label} · {entry.ProfileName}", time, version == null,
+                        group.Select(row => row.Entry).DistinctBy(row => row.Id).ToArray());
+                })
+                .OrderByDescending(version => version.Time).ThenBy(version => version.IsLegacy)
+                .ThenBy(version => version.Key, StringComparer.Ordinal).ToArray();
+            _pendingList.Items.Add(BuildPendingGameRow(game.First().Entry.Manifest.Game, choices, selected));
+        }
+        _buildingPendingFilters = false;
+        _pendingEmpty.Visibility = _pendingList.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        _pendingEmpty.Text = entries.Count == 0 ? "暂无待恢复存档。" : "没有符合筛选条件的存档。";
+        UpdatePendingSelection();
+    }
+
+    private static bool PendingSearchMatches(PendingRestore entry, PendingBackupVersion? version, string search)
+    {
+        if (search.Length == 0) return true;
+        string text = $"{entry.Manifest.Game.Name} {entry.ProfileName} {BackupTime(entry.Manifest.CapturedUtc)} {entry.TargetPath}";
+        if (version != null) text += $" {BackupTime(version.CreatedUtc)} {version.DeviceName}";
+        return text.Contains(search, StringComparison.CurrentCultureIgnoreCase);
+    }
+
+    private ListViewItem BuildPendingGameRow(GameIdentity game, PendingVersionChoice[] choices, HashSet<Guid> selected)
+    {
+        var header = new Grid { ColumnSpacing = 12 };
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(3, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star), MaxWidth = 288 });
+        var title = Heading(game.Name, "BodyStrongTextBlockStyle");
+        title.MaxLines = 2;
+        title.TextTrimming = TextTrimming.CharacterEllipsis;
+        title.VerticalAlignment = VerticalAlignment.Center;
+        ToolTipService.SetToolTip(title, game.Name);
+        header.Children.Add(title);
+
+        string? chosenKey = _pendingGameVersions.GetValueOrDefault(game.Id);
+        PendingVersionChoice active = choices.FirstOrDefault(choice => choice.Key == chosenKey) ?? choices[0];
+        var locations = Stack(6);
+        FrameworkElement versionControl;
+        if (choices.Length > 1)
+        {
+            var picker = new ComboBox { HorizontalAlignment = HorizontalAlignment.Stretch, MinWidth = 0 };
+            AutomationProperties.SetName(picker, $"为“{game.Name}”选择存档版本");
+            foreach (PendingVersionChoice choice in choices)
+            {
+                var label = SecondaryText(choice.Label);
+                label.MaxLines = 1;
+                label.TextTrimming = TextTrimming.CharacterEllipsis;
+                var item = new ComboBoxItem { Content = label, Tag = choice };
+                ToolTipService.SetToolTip(item, choice.Label);
+                picker.Items.Add(item);
+                if (ReferenceEquals(choice, active)) picker.SelectedItem = item;
+            }
+            ToolTipService.SetToolTip(picker, active.Label);
+            picker.SelectionChanged += (_, _) =>
+            {
+                if (picker.SelectedItem is not ComboBoxItem { Tag: PendingVersionChoice version }) return;
+                _pendingGameVersions[game.Id] = version.Key;
+                ToolTipService.SetToolTip(picker, version.Label);
+                ShowPendingVersion(locations, version, SelectedPendingIds().ToHashSet());
+                UpdatePendingSelection();
+            };
+            versionControl = picker;
+        }
+        else
+        {
+            versionControl = SecondaryText(active.Label);
+            ToolTipService.SetToolTip(versionControl, active.Label);
+        }
+
+        versionControl.VerticalAlignment = VerticalAlignment.Center;
+        Grid.SetColumn(versionControl, 1);
+        header.Children.Add(versionControl);
+        ShowPendingVersion(locations, active, selected);
+        var content = Stack(8);
+        content.Children.Add(header);
+        content.Children.Add(locations);
+        return new ListViewItem
+        {
+            Content = Surface(content), Tag = locations, IsTabStop = false,
+            HorizontalContentAlignment = HorizontalAlignment.Stretch,
+            Padding = new Thickness(0), Margin = new Thickness(0, 0, 0, 10)
+        };
+    }
+
+    private void ShowPendingVersion(StackPanel locations, PendingVersionChoice version, HashSet<Guid> selected)
+    {
+        locations.Children.Clear();
+        foreach (PendingRestore entry in version.Locations)
+        {
+            var content = Stack(4);
             var badges = Row();
-            var title = Heading(entry.Manifest.Game.Name, "BodyStrongTextBlockStyle");
-            title.MaxLines = 2;
-            title.TextTrimming = TextTrimming.CharacterEllipsis;
-            badges.Children.Add(title);
             StatusTone tone = entry.Status switch
             {
                 RestoreStatus.Ready => StatusTone.Info,
@@ -195,38 +295,46 @@ public sealed partial class BackupSettingsView
             badges.Children.Add(StatusBadge(StateLabel(entry.Status), tone));
             if (entry.IsBusy) badges.Children.Add(StatusBadge("正在使用"));
             content.Children.Add(badges);
-            var metadata = Row();
-            metadata.Children.Add(SecondaryText(entry.ProfileName));
-            metadata.Children.Add(SecondaryText($"采集于 {BackupTime(entry.Manifest.CapturedUtc)}"));
-            metadata.Children.Add(SecondaryText(SizeLabel(entry.Manifest.Length)));
-            content.Children.Add(metadata);
             SaveLocation? location = entry.Manifest.Locations.FirstOrDefault(l => l.Id == entry.LocationId);
-            if (!string.IsNullOrWhiteSpace(entry.TargetPath)) content.Children.Add(PathLine("存档", entry.TargetPath));
-            else if (location != null)
-                content.Children.Add(PathLine("备份位置", SaveBaseLabel(location.BaseKind) +
-                    (string.IsNullOrWhiteSpace(location.RelativePath) ? "" : "\\" + location.RelativePath)));
+            string? path = entry.TargetPath;
+            if (string.IsNullOrWhiteSpace(path) && location != null)
+                path = SaveBaseLabel(location.BaseKind) + (string.IsNullOrWhiteSpace(location.RelativePath) ? "" : "\\" + location.RelativePath);
+            if (!string.IsNullOrWhiteSpace(path))
+                content.Children.Add(PathLine(string.IsNullOrWhiteSpace(entry.TargetPath) ? "备份位置" : "存档", path));
+            content.Children.Add(SecondaryText($"采集于 {BackupTime(entry.Manifest.CapturedUtc)} · {SizeLabel(entry.Manifest.Length)}"));
             if (!string.IsNullOrWhiteSpace(entry.Error)) content.Children.Add(SecondaryText(entry.Error));
-            var item = new ListViewItem { Content = content, Tag = entry, HorizontalContentAlignment = HorizontalAlignment.Stretch,
-                Padding = new Thickness(12), Margin = new Thickness(0, 0, 0, 10) };
-            _pendingList.Items.Add(item);
-            if (selected.Contains(entry.Id)) _pendingList.SelectedItems.Add(item);
+
+            var check = new CheckBox
+            {
+                Content = content, Tag = entry, DataContext = version.Label, IsChecked = selected.Contains(entry.Id),
+                HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch
+            };
+            AutomationProperties.SetName(check, $"{entry.Manifest.Game.Name} · {StateLabel(entry.Status)} · {path}");
+            check.Checked += (_, _) => UpdatePendingSelection();
+            check.Unchecked += (_, _) => UpdatePendingSelection();
+            locations.Children.Add(check);
         }
+    }
+
+    private IEnumerable<CheckBox> PendingLocationChecks() => _pendingList.Items.OfType<ListViewItem>()
+        .SelectMany(row => ((StackPanel)row.Tag).Children.OfType<CheckBox>());
+
+    private void SelectPendingLocations(bool selected)
+    {
+        _buildingPendingFilters = true;
+        foreach (CheckBox check in PendingLocationChecks()) check.IsChecked = selected;
         _buildingPendingFilters = false;
-        _pendingEmpty.Visibility = _pendingList.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        _pendingEmpty.Text = entries.Count == 0
-            ? "暂无待恢复存档。"
-            : "没有符合筛选条件的存档。";
         UpdatePendingSelection();
     }
 
     private void UpdatePendingSelection()
     {
         if (_buildingPendingFilters) return;
-        PendingRestore[] selected = _pendingList.SelectedItems.OfType<ListViewItem>()
-            .Select(item => (PendingRestore)item.Tag).ToArray();
-        _pendingSelection.Text = $"已选 {selected.Length} 项 · 显示 {_pendingList.Items.Count} 项";
-        _pendingRestoreBlocker = PendingRestoreBlocker(selected);
-        _pendingRestoreHint.Text = selected.Length == 0
+        CheckBox[] checks = PendingLocationChecks().ToArray();
+        _selectedPending = checks.Where(check => check.IsChecked == true).Select(check => (PendingRestore)check.Tag).ToArray();
+        _pendingSelection.Text = $"已选 {_selectedPending.Length} 项 · 显示 {checks.Length} 项";
+        _pendingRestoreBlocker = PendingRestoreBlocker(_selectedPending);
+        _pendingRestoreHint.Text = _selectedPending.Length == 0
             ? "选择一项可设置目标。"
             : _pendingRestoreBlocker ?? "已选存档可以恢复。";
         RefreshOperationControls();
@@ -251,8 +359,7 @@ public sealed partial class BackupSettingsView
         return null;
     }
 
-    private Guid[] SelectedPendingIds() => _pendingList.SelectedItems.OfType<ListViewItem>()
-        .Select(item => ((PendingRestore)item.Tag).Id).ToArray();
+    private Guid[] SelectedPendingIds() => _selectedPending.Select(entry => entry.Id).ToArray();
 
     private async Task ConfigurePendingTargetAsync(CancellationToken ct)
     {

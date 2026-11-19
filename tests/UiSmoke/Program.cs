@@ -103,7 +103,7 @@ public sealed partial class SmokeApp : Application
                     pages.SelectedIndex = 4;
                     await Task.Delay(100);
                     ListView pending = Field<ListView>(view, "_pendingList");
-                    pending.SelectedItem = pending.Items[0];
+                    PendingChecks(pending).First().IsChecked = true;
                     var configure = typeof(BackupSettingsView).GetMethod("ConfigurePendingTargetAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
                     _ = (Task)configure.Invoke(view, [CancellationToken.None])!;
                 }
@@ -166,7 +166,12 @@ public sealed partial class SmokeApp : Application
                             var offset = configure.TransformToVisual(saves).TransformPoint(new Windows.Foundation.Point());
                             Check(size.Width >= 760 ? offset.X < -100 : offset.X is >= 0 and <= 20 && offset.Y < 0,
                                 "待恢复选择操作应在宽窗口的列表左侧、窄窗口的列表上方。");
-                            Check(PositionY(FindButton(view, "刷新状态"), saves) < 0, "刷新入口应在筛选结果上方。");
+                            Button refresh = FindButton(view, "刷新状态");
+                            TextBlock summary = Field<TextBlock>(view, "_pendingSummary");
+                            Check(PositionY(refresh, saves) < 0, "刷新入口应在筛选结果上方。");
+                            double refreshCenter = PositionY(refresh, contentScroll) + refresh.ActualHeight / 2;
+                            double summaryCenter = PositionY(summary, contentScroll) + summary.ActualHeight / 2;
+                            Check(Math.Abs(refreshCenter - summaryCenter) < 1, "刷新按钮应与左侧统计文字垂直居中对齐。");
                         }
                         if (size.Width == 1080) await CaptureAsync(host, $"settings-{size.Width}x{size.Height}-page-{index}-top.png");
                         double navigationY = PositionY(navigation, hostScroll);
@@ -350,13 +355,15 @@ public sealed partial class SmokeApp : Application
             "返回待恢复页应只显示一条刷新结果，不能同时重复显示控制器状态。");
         results.Add("PASS refresh-completion-scope: progress follows a running task across tabs; completion stays on its originating tab without duplicate status");
 
+        await WaitForUiAsync(() => FindAll<Button>(view).Any(button => Equals(button.Content, "全选筛选结果") && button.IsEnabled),
+            "返回待恢复页后应可批量选择存档。");
         InvokeButton(FindButton(view, "全选筛选结果"));
         await WaitIdleAsync(view);
-        Check(Field<ListView>(view, "_pendingList").SelectedItems.Count > 0 && !feedback.IsOpen && status.Visibility == Visibility.Collapsed,
+        Check(PendingChecks(Field<ListView>(view, "_pendingList")).Any(check => check.IsChecked == true) && !feedback.IsOpen && status.Visibility == Visibility.Collapsed,
             "全选应直接更新列表，不额外显示成功提示。");
         InvokeButton(FindButton(view, "取消选择"));
         await WaitIdleAsync(view);
-        Check(Field<ListView>(view, "_pendingList").SelectedItems.Count == 0 && !feedback.IsOpen, "取消选择不应额外显示完成提示。");
+        Check(PendingChecks(Field<ListView>(view, "_pendingList")).All(check => check.IsChecked != true) && !feedback.IsOpen, "取消选择不应额外显示完成提示。");
         Check(!FindButton(view, "设置所选目标…").IsEnabled && !FindButton(view, "恢复所选存档").IsEnabled &&
             Field<TextBlock>(view, "_pendingRestoreHint").Text.Contains("选择一项"),
             "未选项目时应禁用选择相关操作并说明下一步。");
@@ -567,11 +574,10 @@ public sealed partial class SmokeApp : Application
     private static async Task CheckPendingTargetSwitchAsync(BackupSettingsView view, DemoController controller, List<string> results)
     {
         ListView pending = Field<ListView>(view, "_pendingList");
-        PendingRestore entry = controller.GetPending().First(item => item.LocalGameId != null);
+        PendingRestore entry = controller.GetPending().Single(item => item.Status == RestoreStatus.Ready);
         string? previousOverride = entry.TargetOverride;
         entry.TargetOverride = Path.Combine(Program.Output, "old-game-target");
-        pending.SelectedItems.Clear();
-        pending.SelectedItem = pending.Items.OfType<ListViewItem>().Single(item => ((PendingRestore)item.Tag).Id == entry.Id);
+        foreach (CheckBox check in PendingChecks(pending)) check.IsChecked = ((PendingRestore)check.Tag).Id == entry.Id;
         MethodInfo method = typeof(BackupSettingsView).GetMethod("ConfigurePendingTargetAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
         int operationsBefore = controller.OperationCalls;
         Task operation = (Task)method.Invoke(view, [CancellationToken.None])!;
@@ -616,42 +622,90 @@ public sealed partial class SmokeApp : Application
         for (int index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
             foreach (T child in FindAll<T>(VisualTreeHelper.GetChild(parent, index))) yield return child;
     }
+    private static IEnumerable<CheckBox> PendingChecks(ListView pending) => pending.Items.OfType<ListViewItem>()
+        .SelectMany(item => ((StackPanel)item.Tag).Children.OfType<CheckBox>());
+
     private static async Task CheckPendingAndLibraryFiltersAsync(BackupSettingsView view, DemoController controller,
         Pivot navigation, List<string> results)
     {
         ListView pending = Field<ListView>(view, "_pendingList");
-        var statuses = Field<Dictionary<RestoreStatus, CheckBox>>(view, "_pendingStatusFilters");
-        statuses[RestoreStatus.Ready].IsChecked = true;
-        statuses[RestoreStatus.Restored].IsChecked = true;
-        Check(pending.Items.Count == 2, "状态勾选应显示任一选中状态。");
         Button restore = FindButton(view, "恢复所选存档");
         Button configure = FindButton(view, "设置所选目标…");
         TextBlock hint = Field<TextBlock>(view, "_pendingRestoreHint");
-        ListViewItem ready = pending.Items.OfType<ListViewItem>().Single(row => ((PendingRestore)row.Tag).Status == RestoreStatus.Ready);
-        pending.SelectedItems.Add(ready);
+        DropDownButton filterButton = Field<DropDownButton>(view, "_pendingVersionFilterButton");
+        ScrollViewer page = Field<ScrollViewer>(view, "_pageScroll");
+        var filter = (Flyout)filterButton.Flyout;
+        bool opened = false;
+        filter.Opened += (_, _) => opened = true;
+        double listTop = PositionY(pending, page);
+        double extent = page.ExtentHeight;
+        filter.ShowAt(filterButton);
+        await WaitForUiAsync(() => opened, "版本筛选应打开原生浮层。");
+        Check(Math.Abs(PositionY(pending, page) - listTop) < 1 && Math.Abs(page.ExtentHeight - extent) < 1,
+            "打开版本筛选浮层不得挤占正文高度。");
+        filter.Hide();
+        await Task.Delay(100);
+
+        Check(pending.Items.Count == 2, "结果中每款游戏应只显示一组。");
+        var gameRow = pending.Items.OfType<ListViewItem>().Single(item =>
+            ((StackPanel)item.Tag).Children.OfType<CheckBox>().Any(check => ((PendingRestore)check.Tag).Status == RestoreStatus.Ready));
+        var gameContent = (StackPanel)((Border)gameRow.Content).Child;
+        var header = (Grid)gameContent.Children[0];
+        ComboBox versionPicker = header.Children.OfType<ComboBox>().Single();
+        Check(Grid.GetColumn(versionPicker) == 1 && versionPicker.Items.Count == 3,
+            "游戏右侧应可选择新旧快照和未记录版本的暂存。");
+        var ready = PendingChecks(pending).Single(check => ((PendingRestore)check.Tag).Status == RestoreStatus.Ready);
+        var restored = PendingChecks(pending).Single(check => ((PendingRestore)check.Tag).Status == RestoreStatus.Restored);
+        foreach (CheckBox check in PendingChecks(pending)) check.IsChecked = check == ready;
         Check(restore.IsEnabled && configure.IsEnabled, "选中一个有效目标后应可设置或恢复。");
-        pending.SelectAll();
+        restored.IsChecked = true;
         Check(!restore.IsEnabled && !configure.IsEnabled && hint.Text.Contains("同一目标"),
-            "同一目标选择多个版本时应就地提示冲突并禁用恢复。");
-        pending.SelectedItems.Clear();
+            "多个位置指向同一目标时应就地提示冲突并禁用恢复。");
+        var latest = versionPicker.SelectedItem;
+        string older = controller.GetPending().Single(item => item.Status == RestoreStatus.PendingPath).BackupVersions.Single()
+            .CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+        versionPicker.SelectedItem = versionPicker.Items.OfType<ComboBoxItem>()
+            .Single(item => ToolTipService.GetToolTip(item) is string label && label.StartsWith(older, StringComparison.Ordinal));
+        Check(PendingChecks(pending).Any(check => ((PendingRestore)check.Tag).Status == RestoreStatus.PendingPath) &&
+            !PendingChecks(pending).Any(check => ((PendingRestore)check.Tag).Status == RestoreStatus.Restored),
+            "选择较旧快照应替换本游戏的存档位置。");
+        Check(PendingChecks(pending).Count(check => check.IsChecked == true) == 1 &&
+            PendingChecks(pending).Single(check => check.IsChecked == true).Tag == ready.Tag,
+            "切换快照只保留同一份共用存档的勾选。");
+        versionPicker.SelectedItem = latest;
+        foreach (CheckBox check in PendingChecks(pending)) check.IsChecked = false;
+
+        var statuses = Field<Dictionary<RestoreStatus, CheckBox>>(view, "_pendingStatusFilters");
+        statuses[RestoreStatus.Ready].IsChecked = true;
+        statuses[RestoreStatus.Restored].IsChecked = true;
+        Check(PendingChecks(pending).Count() == 2, "状态勾选应显示任一选中状态。");
         StackPanel versionFilters = Field<StackPanel>(view, "_pendingVersionFilters");
         CheckBox[] versions = versionFilters.Children.OfType<CheckBox>().ToArray();
         Check(versions.Length == 3 && ((TextBlock)versions[0].Content).Text.Contains("2 个游戏") &&
             ((TextBlock)versions[2].Content).Text.Contains("版本未记录"), "过滤项应按真实备份快照和旧暂存归组。");
         versions[0].IsChecked = true;
-        Check(pending.Items.Count == 2, "版本与状态筛选应取交集。");
+        Check(PendingChecks(pending).Count() == 2, "版本与状态筛选应取交集。");
         statuses[RestoreStatus.Ready].IsChecked = false;
         statuses[RestoreStatus.Restored].IsChecked = false;
-        Check(pending.Items.Count == 3, "同一快照应显示其中的多款游戏。");
+        Check(pending.Items.Count == 2 && PendingChecks(pending).Count() == 3, "同一快照应显示其中的多款游戏及其地址。");
         versions[1].IsChecked = true;
-        Check(pending.Items.Count == 4, "多选快照应包含共享存档且同一条目只显示一次。");
+        Check(PendingChecks(pending).Count(check => ((PendingRestore)check.Tag).Status == RestoreStatus.Ready) == 1,
+            "多选快照时，同一份存档只显示一次。");
         versions[0].IsChecked = false;
         versions[1].IsChecked = false;
-        Check(pending.Items.Count == controller.GetPending().Count, "清除勾选后应恢复全部存档。");
-        pending.SelectedItems.Add(pending.Items.OfType<ListViewItem>().Single(row => ((PendingRestore)row.Tag).Status == RestoreStatus.PendingLink));
+        versions[2].IsChecked = true;
+        Check(PendingChecks(pending).Single().Tag is PendingRestore { Status: RestoreStatus.Failed },
+            "旧暂存筛选应显示版本未记录的任务。");
+        versions[2].IsChecked = false;
+        var search = Field<TextBox>(view, "_pendingSearch");
+        search.Text = "仅保留游戏信息";
+        await WaitForUiAsync(() => pending.Items.Count == 1, "输入游戏名应直接定位待恢复条目。");
+        PendingChecks(pending).Single().IsChecked = true;
         Check(configure.IsEnabled && !restore.IsEnabled && hint.Text.Contains("设置所选目标"),
             "缺少目标时应保留设置入口，并在恢复按钮旁说明操作。");
-        pending.SelectedItems.Clear();
+        search.Text = "";
+        await WaitForUiAsync(() => pending.Items.Count == 2, "清除搜索后应恢复全部游戏。");
+        foreach (CheckBox check in PendingChecks(pending)) check.IsChecked = false;
 
         navigation.SelectedIndex = 5;
         await Task.Delay(120);
@@ -681,7 +735,7 @@ public sealed partial class SmokeApp : Application
         await WaitIdleAsync(view);
         Check(controller.LastLibraryAssociation is { } saved && saved.Path == target.Text && saved.LibraryId == null,
             "确认自定义目录后应只传递实际路径。");
-        results.Add("PASS library-and-pending-filters: pending selection guidance, same-target conflict, snapshot filters, library destination and confirmation");
+        results.Add("PASS pending-versions-and-library: one row per game, version switching and shared selection, overlay without reflow, snapshot/status search, conflict hints and library confirmation");
     }
 
     private static T? Find<T>(DependencyObject parent) where T : DependencyObject
