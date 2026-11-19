@@ -441,7 +441,8 @@ public sealed partial class BackupCoordinator
                 HostExport current = await _host.ExportAsync(Path.Combine(work, "current"), ct);
                 ReportRestore(80, "正在合并所选资料…");
                 merged = data != null
-                    ? await SoftwareBackupCodec.MergeAsync(current, data, media, content, working, localGames, Path.Combine(work, "merged"), ct)
+                    ? await SoftwareBackupCodec.MergeAsync(current, data, media, content, working, localGames,
+                        Path.Combine(work, "merged"), ct, snapshot.DeviceId == Settings.DeviceId)
                     : await SoftwareBackupCodec.MergeLocalGamesAsync(current, working, localGames, Path.Combine(work, "merged"), ct);
                 if (merged.Conflicts.Count > 0)
                     throw new InvalidOperationException("请先确定以下游戏的对应关系，再恢复：" + string.Join("；", merged.Conflicts));

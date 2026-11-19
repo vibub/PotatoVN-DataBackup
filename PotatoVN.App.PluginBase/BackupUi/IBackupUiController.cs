@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using PotatoVN.Backup.Core;
+using PotatoVN.Backup.Core.Engine;
 
 namespace PotatoVN.App.PluginBase.BackupUi;
 
@@ -32,7 +33,13 @@ public interface IBackupUiController
     Task ConfigurePendingAsync(Guid pendingId, Guid? localGameId, string? targetPath, CancellationToken cancellationToken);
     Task RestorePendingAsync(IReadOnlyList<Guid> ids, CancellationToken cancellationToken);
     Task ClearPendingAsync(IReadOnlyList<Guid> ids, CancellationToken cancellationToken);
-    Task ApplyLibraryMappingAsync(string libraryId, string targetRoot, CancellationToken cancellationToken);
+    IReadOnlyList<LocalLibrary> GetLocalLibraries();
+    Task ApplyLibraryMappingAsync(string libraryId, string targetRoot, Guid? targetLibraryId, CancellationToken cancellationToken);
+}
+
+public sealed record LocalLibrary(Guid Id, string Name, string Path, LibraryKind Kind)
+{
+    public override string ToString() => $"{Name} · {Path}";
 }
 
 public sealed record SavePathSuggestion(string Path, bool IsFile, string Source);

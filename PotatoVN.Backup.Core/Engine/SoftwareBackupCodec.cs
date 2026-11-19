@@ -137,7 +137,7 @@ public static class SoftwareBackupCodec
 
     public static async Task<SoftwareMergeResult> MergeAsync(HostExport current, string dataZip, string? mediaZip,
         BackupContent selectedContent, BackupSettings settings, IReadOnlyList<GameIdentity> localGames,
-        string workDirectory, CancellationToken ct = default)
+        string workDirectory, CancellationToken ct = default, bool sameDevice = false)
     {
         var result = new SoftwareMergeResult();
         var native = Path.Combine(workDirectory, "merged");
@@ -243,28 +243,7 @@ public static class SoftwareBackupCodec
             RewriteReferences(incoming, uuidMap);
             if (portableName == "libraries.json")
             {
-                foreach (var source in AsArray(incoming).OfType<JsonObject>())
-                {
-                    if (string.IsNullOrWhiteSpace(source["Path"]?.ToString())) continue;
-                    source.Remove("_DataBackupImages");
-                    var embedded = new JsonObject();
-                    foreach (var image in EnumerateImageReferences(source).Distinct(StringComparer.OrdinalIgnoreCase))
-                    {
-                        var file = BackupFiles.Within(media, image);
-                        if (File.Exists(file)) embedded[image] = Convert.ToBase64String(await File.ReadAllBytesAsync(file, ct));
-                    }
-                    if (embedded.Count > 0) source["_DataBackupImages"] = embedded;
-                    var id = source["Id"]?.ToString() ?? Guid.NewGuid().ToString();
-                    var saved = settings.LibraryMappings.FirstOrDefault(m => m.Id == id);
-                    var mapping = new PendingLibraryMapping
-                    {
-                        Id = id, Name = source["Name"]?.ToString() ?? "游戏库", OriginalPath = source["Path"]?.ToString() ?? "",
-                        SourceJson = source.ToJsonString(), TargetPath = saved?.TargetPath
-                    };
-                    if (saved is not null) settings.LibraryMappings.Remove(saved);
-                    settings.LibraryMappings.Add(mapping);
-                }
-                result.Notices.Add("原游戏库已保存为待映射配置；未根据旧电脑路径建立本地关联。");
+                await MergeLibrariesAsync(native, media, AsArray(incoming), settings, usableGames, sameDevice, result, ct);
                 continue;
             }
             await CopyReferencedMediaAsync(incoming, media, native, imageNames, ct);
@@ -288,7 +267,6 @@ public static class SoftwareBackupCodec
             var incoming = await BackupFiles.ReadJsonAsync<Dictionary<string, JsonNode?>>(Path.Combine(portable, "settings.json"), ct);
             result.Settings = incoming.Where(p => PortableSettingKeys.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value);
         }
-        if (matchesGames) await ApplyMappingsToNativeAsync(native, settings, usableGames, result, ct);
         result.ArchivePath = Path.Combine(workDirectory, "PotatoVN_DataBackup.pvnExport.zip");
         await BackupFiles.ZipAsync(native, result.ArchivePath, ct);
         return result;
@@ -385,84 +363,107 @@ public static class SoftwareBackupCodec
         return Guid.TryParse(value?.ToString(), out var id) ? id : null;
     }
 
-    public static async Task<SoftwareMergeResult> ApplyLibraryMappingsAsync(HostExport current,
-        BackupSettings settings, IReadOnlyList<GameIdentity> games, string workDirectory, CancellationToken ct = default)
+    private static async Task MergeLibrariesAsync(string native, string media, JsonArray incoming, BackupSettings settings,
+        IReadOnlyList<GameIdentity> games, bool sameDevice, SoftwareMergeResult result, CancellationToken ct)
     {
-        var result = new SoftwareMergeResult();
-        var native = Path.Combine(workDirectory, "mapped-native");
-        await BackupFiles.ExtractAsync(current.ArchivePath, native, ct);
-        await ApplyMappingsToNativeAsync(native, settings, games, result, ct);
-        result.ArchivePath = Path.Combine(workDirectory, "PotatoVN_MappedLibrary.pvnExport.zip");
-        await BackupFiles.ZipAsync(native, result.ArchivePath, ct);
-        return result;
+        string path = Path.Combine(native, "data.galgameSources.json");
+        JsonArray sources = await ReadArrayAsync(path, ct);
+        var gameIds = games.Select(game => game.Id).ToHashSet();
+        int deferred = 0;
+        foreach (JsonObject source in incoming.OfType<JsonObject>())
+        {
+            string? originalRoot = source["Path"]?.ToString();
+            if (!Path.IsPathFullyQualified(originalRoot ?? "") || LibraryAssociation.GetKind(source) is not { } kind ||
+                !Guid.TryParse(source["Id"]?.ToString(), out Guid id)) continue;
+
+            PendingLibraryMapping? saved = settings.LibraryMappings.FirstOrDefault(m => Guid.TryParse(m.Id, out Guid savedId) && savedId == id);
+            var mapping = new PendingLibraryMapping
+            {
+                Id = id.ToString(), Name = source["Name"]?.ToString() ?? "游戏库",
+                OriginalPath = originalRoot!, TargetPath = saved?.TargetPath, TargetLibraryId = saved?.TargetLibraryId
+            };
+            source.Remove("_DataBackupImages");
+            var compatible = sources.OfType<JsonObject>().Where(s => LibraryAssociation.GetKind(s) == kind).ToList();
+            JsonObject? FindLibrary(Guid libraryId) => compatible.FirstOrDefault(s =>
+                Guid.TryParse(s["Id"]?.ToString(), out Guid candidate) && candidate == libraryId);
+            JsonObject? target = mapping.TargetLibraryId is { } targetLibraryId ? FindLibrary(targetLibraryId) : null;
+            if (target == null && sameDevice) target = FindLibrary(id);
+            string? root = target?["Path"]?.ToString();
+            if (target == null)
+            {
+                root = (mapping.TargetLibraryId == null ? mapping.TargetPath : null) ?? (sameDevice ? originalRoot : null);
+                target = compatible.FirstOrDefault(s => LibraryAssociation.SamePath(s["Path"]?.ToString(), root));
+            }
+
+            if (root != null && Path.IsPathFullyQualified(root) && Directory.Exists(root))
+            {
+                if (target == null)
+                {
+                    target = (JsonObject)source.DeepClone();
+                    Guid targetId = sources.OfType<JsonObject>().Any(s => Guid.TryParse(s["Id"]?.ToString(), out Guid candidate) && candidate == id)
+                        ? Guid.NewGuid() : id;
+                    target["Id"] = targetId.ToString();
+                    target["SourceType"] = (int)kind;
+                    target["Path"] = Path.GetFullPath(root);
+                    target["ScanOnStart"] = false;
+                    target["Detect"] = false;
+                    if (!LibraryAssociation.SamePath(root, originalRoot)) target.Remove("DontScanPath");
+                    target["Galgames"] = new JsonArray();
+                    await CopyReferencedMediaAsync(target, media, native, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase), ct);
+                    sources.Add(target);
+                }
+
+                MergeLibraryMembers(sources, target, source, kind, originalRoot!, root, gameIds);
+                mapping.TargetPath = root;
+                mapping.TargetLibraryId = Guid.Parse(target["Id"]!.ToString());
+            }
+            else deferred++;
+
+            // 暂存库封面供之后手动关联使用。
+            var embedded = new JsonObject();
+            foreach (string image in EnumerateImageReferences(source).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                string file = BackupFiles.Within(media, image);
+                if (File.Exists(file)) embedded[image] = Convert.ToBase64String(await File.ReadAllBytesAsync(file, ct));
+            }
+            if (embedded.Count > 0) source["_DataBackupImages"] = embedded;
+            mapping.SourceJson = source.ToJsonString();
+            if (saved != null) settings.LibraryMappings.Remove(saved);
+            settings.LibraryMappings.Add(mapping);
+        }
+        if (deferred > 0) result.Notices.Add($"有 {deferred} 个游戏库需要确认本机位置。");
+        await WriteNodeAsync(path, sources, ct);
     }
 
-    private static async Task ApplyMappingsToNativeAsync(string native, BackupSettings settings,
-        IReadOnlyList<GameIdentity> games, SoftwareMergeResult result, CancellationToken ct)
+    private static void MergeLibraryMembers(JsonArray sources, JsonObject target, JsonObject incoming, LibraryKind kind,
+        string originalRoot, string targetRoot, HashSet<Guid> gameIds)
     {
-        var path = Path.Combine(native, "data.galgameSources.json");
-        var sources = await ReadArrayAsync(path, ct);
-        foreach (var mapping in settings.LibraryMappings.Where(m => !string.IsNullOrWhiteSpace(m.TargetPath)))
+        if (target["Galgames"] is not JsonArray members) target["Galgames"] = members = new JsonArray();
+        foreach (JsonObject member in LibraryAssociation.Members(incoming))
         {
-            if (!Directory.Exists(mapping.TargetPath))
-            {
-                result.Notices.Add(mapping.Name + "：目标库目录不存在，尚未关联。");
+            Guid gameId = LibraryAssociation.GameId(member);
+            if (!gameIds.Contains(gameId)) continue;
+            JsonObject? existing = LibraryAssociation.Members(target).FirstOrDefault(m => LibraryAssociation.GameId(m) == gameId);
+            if (LibraryAssociation.Exists(existing?["Path"]?.ToString(), kind)) continue;
+            string? path = LibraryAssociation.ResolveMember(originalRoot, member["Path"]?.ToString(), targetRoot, kind);
+            if (path == null) continue;
+
+            // 宿主只允许一个本地安装关系，保留仍有效的现有安装和其他游戏占用的位置。
+            JsonObject[] siblingSources = sources.OfType<JsonObject>().Where(s => !ReferenceEquals(s, target) &&
+                (kind == LibraryKind.Archive ? LibraryAssociation.GetKind(s) == kind :
+                    LibraryAssociation.GetKind(s) is LibraryKind.Folder or LibraryKind.Steam)).ToArray();
+            var siblingMembers = siblingSources.SelectMany(LibraryAssociation.Members).ToArray();
+            if (kind != LibraryKind.Archive && siblingMembers.Any(m => LibraryAssociation.GameId(m) == gameId && Directory.Exists(m["Path"]?.ToString())))
                 continue;
-            }
-            var incoming = JsonNode.Parse(mapping.SourceJson) as JsonObject ?? throw new InvalidDataException("待映射库配置损坏。");
-            ValidateNativeTypeNames(incoming);
-            if (incoming["_DataBackupImages"] is JsonObject embedded)
-            {
-                foreach (var image in embedded)
-                {
-                    var renamed = "Images/pvn_library_" + Guid.NewGuid().ToString("N") + Path.GetExtension(image.Key);
-                    var imagePath = BackupFiles.Within(native, renamed);
-                    Directory.CreateDirectory(Path.GetDirectoryName(imagePath)!);
-                    await File.WriteAllBytesAsync(imagePath, Convert.FromBase64String(image.Value!.GetValue<string>()), ct);
-                    ReplaceImageReference(incoming, image.Key, renamed);
-                }
-                incoming.Remove("_DataBackupImages");
-            }
-            incoming["Path"] = Path.GetFullPath(mapping.TargetPath!);
-            incoming["ScanOnStart"] = false;
-            incoming["Detect"] = false;
-            var memberships = incoming["Galgames"] is JsonArray array ? array : new JsonArray();
-            var kept = new JsonArray();
-            foreach (var member in memberships.OfType<JsonObject>())
-            {
-                if (!Guid.TryParse(member["Galgame"]?.ToString(), out var gameId)) continue;
-                var game = games.FirstOrDefault(g => g.Id == gameId);
-                if (game is null || (game.LocalDirectory is { } linked && Directory.Exists(linked))) continue;
-                var original = member["Path"]?.ToString();
-                if (string.IsNullOrWhiteSpace(original) || string.IsNullOrWhiteSpace(mapping.OriginalPath)) continue;
-                var relative = Path.GetRelativePath(mapping.OriginalPath, original);
-                var target = relative == "." ? Path.GetFullPath(mapping.TargetPath!) : BackupFiles.Within(mapping.TargetPath!, relative);
-                if (!Directory.Exists(target)) continue;
-                var copy = (JsonObject)member.DeepClone();
-                copy["Path"] = target;
-                kept.Add(copy);
-            }
-            incoming["Galgames"] = kept;
-            await CopyReferencedMediaAsync(incoming, native, native, null, ct);
-            var existing = sources.OfType<JsonObject>().FirstOrDefault(s => s["Id"]?.ToString() == mapping.Id);
-            if (existing is not null)
-            {
-                if (existing["Path"]?.ToString() == incoming["Path"]?.ToString())
-                {
-                    existing["Name"] = incoming["Name"]?.DeepClone();
-                    existing["ImagePath"] = incoming["ImagePath"]?.DeepClone();
-                    var currentMembers = existing["Galgames"] as JsonArray ?? new JsonArray();
-                    foreach (var member in kept.OfType<JsonObject>())
-                        if (!currentMembers.OfType<JsonObject>().Any(m => m["Galgame"]?.ToString() == member["Galgame"]?.ToString()))
-                            currentMembers.Add(member.DeepClone());
-                    if (existing["Galgames"] is null) existing["Galgames"] = currentMembers;
-                    continue;
-                }
-                incoming["Id"] = Guid.NewGuid().ToString();
-            }
-            sources.Add(incoming);
+            if (LibraryAssociation.Members(target).Concat(siblingMembers).Any(m => LibraryAssociation.GameId(m) != gameId &&
+                    LibraryAssociation.SamePath(m["Path"]?.ToString(), path))) continue;
+
+            if (kind != LibraryKind.Archive)
+                foreach (JsonObject stale in siblingMembers.Where(m => LibraryAssociation.GameId(m) == gameId))
+                    ((JsonArray)stale.Parent!).Remove(stale);
+            if (existing != null) existing["Path"] = path;
+            else members.Add(new JsonObject { ["Galgame"] = gameId.ToString(), ["Path"] = path });
         }
-        await WriteNodeAsync(path, sources, ct);
     }
 
     private static HashSet<string> SelectedFields(BackupContent content) => GameFields
@@ -574,18 +575,6 @@ public static class SoftwareBackupCodec
                     Guid.TryParse(text, out var id) && mapping.TryGetValue(id, out var target)) array[i] = target.ToString();
                 else if (array[i] is { } child) RewriteReferences(child, mapping);
         }
-    }
-
-    private static void ReplaceImageReference(JsonNode node, string oldPath, string newPath)
-    {
-        if (node is JsonObject obj)
-        {
-            foreach (var pair in obj.ToList())
-                if (pair.Value is JsonValue value && value.TryGetValue<string>(out var text) &&
-                    text.Replace('\\', '/').TrimStart('.', '/') == oldPath) obj[pair.Key] = "./" + newPath;
-                else if (pair.Value is not null) ReplaceImageReference(pair.Value, oldPath, newPath);
-        }
-        else if (node is JsonArray array) foreach (var child in array.OfType<JsonNode>()) ReplaceImageReference(child, oldPath, newPath);
     }
 
     private static void MergeEntry(JsonObject target, JsonObject incoming, HashSet<Guid> gameScope)

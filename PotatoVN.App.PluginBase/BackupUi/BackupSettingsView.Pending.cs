@@ -14,12 +14,11 @@ namespace PotatoVN.App.PluginBase.BackupUi;
 public sealed partial class BackupSettingsView
 {
     private readonly TextBlock _pendingSummary = Note("");
-    private readonly TextBlock _pendingCounts = Note("");
     private readonly TextBlock _pendingSelection = Note("");
     private readonly TextBlock _pendingEmpty = Note("");
-    private readonly ComboBox _pendingGameFilter = new() { Header = "游戏", MinWidth = 150 };
-    private readonly ComboBox _pendingVersionFilter = new() { Header = "备份版本", MinWidth = 190 };
-    private readonly ComboBox _pendingStatusFilter = new() { Header = "状态", MinWidth = 130 };
+    private readonly StackPanel _pendingGameFilters = Stack(0);
+    private readonly StackPanel _pendingVersionFilters = Stack(0);
+    private readonly Dictionary<RestoreStatus, CheckBox> _pendingStatusFilters = new();
     private readonly TextBox _pendingSearch = TextInput("搜索", "游戏、渠道、备份时间或目标路径");
     private readonly ListView _pendingList = new()
     {
@@ -35,11 +34,17 @@ public sealed partial class BackupSettingsView
         var panel = Stack();
         panel.Children.Add(Heading("待恢复存档"));
         panel.Children.Add(_pendingSummary);
-        panel.Children.Add(_pendingCounts);
-        var filters = Row();
-        foreach (UIElement control in new UIElement[] { _pendingGameFilter, _pendingVersionFilter, _pendingStatusFilter }) filters.Children.Add(control);
-        panel.Children.Add(filters);
         panel.Children.Add(_pendingSearch);
+        var statusFilters = Row();
+        foreach (RestoreStatus status in Enum.GetValues<RestoreStatus>())
+        {
+            CheckBox check = PendingFilter(status.ToString(), StateLabel(status));
+            _pendingStatusFilters.Add(status, check);
+            statusFilters.Children.Add(check);
+        }
+        panel.Children.Add(statusFilters);
+        panel.Children.Add(PendingFilterGroup("按游戏筛选", _pendingGameFilters));
+        panel.Children.Add(PendingFilterGroup("按备份版本筛选", _pendingVersionFilters));
         panel.Children.Add(_pendingList);
         panel.Children.Add(_pendingEmpty);
         panel.Children.Add(_pendingSelection);
@@ -83,12 +88,40 @@ public sealed partial class BackupSettingsView
         cleanup.Children.Add(cleanupActions);
         panel.Children.Add(new Expander { Header = "管理暂存空间", Content = cleanup, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
         _pendingList.SelectionChanged += (_, _) => UpdatePendingSelection();
-        _pendingStatusFilter.SelectionChanged += (_, _) => { if (!_buildingPendingFilters) RefreshPendingView(); };
-        _pendingGameFilter.SelectionChanged += (_, _) => { if (!_buildingPendingFilters) RefreshPendingView(); };
-        _pendingVersionFilter.SelectionChanged += (_, _) => { if (!_buildingPendingFilters) RefreshPendingView(); };
         _pendingSearch.TextChanged += (_, _) => { if (!_buildingPendingFilters) RefreshPendingView(); };
         RefreshPendingView();
         return panel;
+    }
+
+    private static Expander PendingFilterGroup(string title, StackPanel options) => new()
+    {
+        Header = title,
+        Content = new ScrollViewer { Content = options, MaxHeight = 180, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled },
+        HorizontalContentAlignment = HorizontalAlignment.Stretch,
+        HorizontalAlignment = HorizontalAlignment.Stretch
+    };
+
+    private CheckBox PendingFilter(string key, string label)
+    {
+        var check = new CheckBox { Tag = key, Content = Note(label), MinWidth = 0 };
+        check.Checked += (_, _) => RefreshPendingView();
+        check.Unchecked += (_, _) => RefreshPendingView();
+        return check;
+    }
+
+    private static HashSet<string> CheckedPendingFilters(IEnumerable<CheckBox> filters) =>
+        filters.Where(check => check.IsChecked == true).Select(check => (string)check.Tag).ToHashSet();
+
+    private void SetPendingFilters(StackPanel options, IEnumerable<(string Key, string Label)> items)
+    {
+        HashSet<string> selected = CheckedPendingFilters(options.Children.OfType<CheckBox>());
+        options.Children.Clear();
+        foreach (var (key, label) in items)
+        {
+            CheckBox check = PendingFilter(key, label);
+            check.IsChecked = selected.Contains(key);
+            options.Children.Add(check);
+        }
     }
 
     private void RefreshPendingView()
@@ -96,48 +129,36 @@ public sealed partial class BackupSettingsView
         if (_pendingList == null || _buildingPendingFilters) return;
         IReadOnlyList<PendingRestore> entries = _controller.GetPending();
         _pendingSummary.Text = $"实际占用 {SizeLabel(_controller.PendingBytes)} · {entries.Select(p => p.Manifest.Game.Id).Distinct().Count()} 个游戏 · {entries.Select(p => $"{p.ProfileId}/{p.Manifest.ManifestPath}").Distinct().Count()} 个版本 · {entries.Count} 个存档位置";
-        _pendingCounts.Text = string.Join("　", Enum.GetValues<RestoreStatus>().Select(status => $"{StateLabel(status)} {entries.Count(p => p.Status == status)}"));
+        foreach (var (status, check) in _pendingStatusFilters)
+            ((TextBlock)check.Content).Text = $"{StateLabel(status)} {entries.Count(p => p.Status == status)}";
         string key = string.Join("|", entries.Select(p => p.Id.ToString()).OrderBy(id => id));
-        if (_pendingFilterKey != key || _pendingGameFilter.Items.Count == 0)
+        if (_pendingFilterKey != key)
         {
             _pendingFilterKey = key;
             _buildingPendingFilters = true;
-            object? oldGame = Choice(_pendingGameFilter);
-            object? oldVersion = Choice(_pendingVersionFilter);
-            object? oldStatus = Choice(_pendingStatusFilter);
-            _pendingGameFilter.Items.Clear();
-            _pendingVersionFilter.Items.Clear();
-            _pendingStatusFilter.Items.Clear();
-            AddChoice(_pendingGameFilter, "all", "全部游戏");
-            AddChoice(_pendingVersionFilter, "all", "全部版本");
-            AddChoice(_pendingStatusFilter, "all", "全部状态");
-            foreach (IGrouping<Guid, PendingRestore> game in entries.GroupBy(p => p.Manifest.Game.Id).OrderBy(g => g.First().Manifest.Game.Name, StringComparer.CurrentCultureIgnoreCase))
-                AddChoice(_pendingGameFilter, game.Key.ToString("N"), game.First().Manifest.Game.Name);
-            foreach (IGrouping<string, PendingRestore> version in entries.GroupBy(VersionKey).OrderByDescending(g => g.First().Manifest.CapturedUtc))
-            {
-                PendingRestore entry = version.First();
-                AddChoice(_pendingVersionFilter, version.Key, $"{entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} · {entry.ProfileName}");
-            }
-            foreach (RestoreStatus status in Enum.GetValues<RestoreStatus>()) AddChoice(_pendingStatusFilter, status.ToString(), StateLabel(status));
-            SelectChoice(_pendingGameFilter, oldGame ?? "all");
-            SelectChoice(_pendingVersionFilter, oldVersion ?? "all");
-            SelectChoice(_pendingStatusFilter, oldStatus ?? "all");
-            if (_pendingGameFilter.SelectedItem == null) _pendingGameFilter.SelectedIndex = 0;
-            if (_pendingVersionFilter.SelectedItem == null) _pendingVersionFilter.SelectedIndex = 0;
-            if (_pendingStatusFilter.SelectedItem == null) _pendingStatusFilter.SelectedIndex = 0;
+            SetPendingFilters(_pendingGameFilters, entries.GroupBy(p => p.Manifest.Game.Id)
+                .OrderBy(group => group.First().Manifest.Game.Name, StringComparer.CurrentCultureIgnoreCase)
+                .Select(group => (group.Key.ToString("N"), group.First().Manifest.Game.Name)));
+            SetPendingFilters(_pendingVersionFilters, entries.GroupBy(VersionKey)
+                .OrderByDescending(group => group.First().Manifest.CapturedUtc).Select(group =>
+                {
+                    PendingRestore entry = group.First();
+                    return (group.Key, $"{entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} · {entry.ProfileName}");
+                }));
             _buildingPendingFilters = false;
         }
+
         HashSet<Guid> selected = SelectedPendingIds().ToHashSet();
         _pendingList.Items.Clear();
-        string gameFilter = Choice(_pendingGameFilter)?.ToString() ?? "all";
-        string versionFilter = Choice(_pendingVersionFilter)?.ToString() ?? "all";
-        string statusFilter = Choice(_pendingStatusFilter)?.ToString() ?? "all";
+        HashSet<string> games = CheckedPendingFilters(_pendingGameFilters.Children.OfType<CheckBox>());
+        HashSet<string> versions = CheckedPendingFilters(_pendingVersionFilters.Children.OfType<CheckBox>());
+        HashSet<string> statuses = CheckedPendingFilters(_pendingStatusFilters.Values);
         string search = _pendingSearch.Text.Trim();
         foreach (PendingRestore entry in entries.OrderBy(p => p.Manifest.Game.Name, StringComparer.CurrentCultureIgnoreCase).ThenByDescending(p => p.Manifest.CapturedUtc))
         {
-            if (gameFilter != "all" && gameFilter != entry.Manifest.Game.Id.ToString("N")) continue;
-            if (versionFilter != "all" && versionFilter != VersionKey(entry)) continue;
-            if (statusFilter != "all" && statusFilter != entry.Status.ToString()) continue;
+            if (games.Count > 0 && !games.Contains(entry.Manifest.Game.Id.ToString("N"))) continue;
+            if (versions.Count > 0 && !versions.Contains(VersionKey(entry))) continue;
+            if (statuses.Count > 0 && !statuses.Contains(entry.Status.ToString())) continue;
             string description = $"{entry.Manifest.Game.Name} {entry.ProfileName} {entry.Manifest.CapturedUtc.ToLocalTime():yyyy-MM-dd HH:mm:ss} {entry.TargetPath}";
             if (search.Length > 0 && !description.Contains(search, StringComparison.CurrentCultureIgnoreCase)) continue;
             var content = Stack(8);

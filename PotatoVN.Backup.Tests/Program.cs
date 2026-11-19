@@ -19,7 +19,7 @@ internal static partial class EngineTests
 {
     private static readonly string Root = Path.Combine(Path.GetTempPath(), "PotatoVNBackupTests", Guid.NewGuid().ToString("N"));
     private static int _passed;
-    private const int ExpectedChecks = 42;
+    private const int ExpectedChecks = 43;
     public static async Task<int> RunAsync(bool includeIncrementalGc = true)
     {
         int expectedChecks = ExpectedChecks - (includeIncrementalGc ? 0 : 3);
@@ -34,7 +34,8 @@ internal static partial class EngineTests
             await Test("来源冲突需人工映射且不按同名误配", IdentityMatchingAsync);
             await Test("仅恢复分类时正确映射已有游戏UUID", AncillaryOnlyAsync);
             await Test("主页DTO选择与跨UUID迁移", HomeDtoAsync);
-            await Test("延后映射库保留封面且不复用旧路径", DeferredLibraryAsync);
+            await Test("跨设备待关联保留封面，旧版确认目录仍可用", DeferredLibraryAsync);
+            await Test("同设备保留库ID和当前目录，补回成员且跨设备仍待确认", SameDeviceLibraryAsync);
             await Test("部分分类恢复保留范围外关联", CategoryScopeAsync);
             await Test("ZIP穿越、重复路径与备用数据流被拒绝", InvalidZipAsync);
             await Test("存档多位置、重复恢复与明确回退", SavesRoundTripAsync);
@@ -227,7 +228,7 @@ internal static partial class EngineTests
     private static async Task DeferredLibraryAsync()
     {
         var remote = Game(); var libraryId = Guid.NewGuid();
-        var originalRoot = Path.Combine(Work(), "OldLibrary");
+        var originalRoot = Work(); Directory.CreateDirectory(Path.Combine(originalRoot, "GameA"));
         var sources = new JsonArray(new JsonObject {
             ["Id"] = libraryId.ToString(), ["Name"] = "旧游戏库", ["Path"] = originalRoot,
             ["SourceType"] = 0, ["ImagePath"] = "./Images/cover.png", ["ExtraData"] = "SHOULD_NOT_TRANSFER",
@@ -239,10 +240,51 @@ internal static partial class EngineTests
         Check(settings.LibraryMappings[0].SourceJson.Contains("_DataBackupImages") && !settings.LibraryMappings[0].SourceJson.Contains("SHOULD_NOT_TRANSFER"), "待映射图片未保留或携带额外敏感数据");
         var targetRoot = Work(); var gameRoot = Path.Combine(targetRoot, "GameA"); Directory.CreateDirectory(gameRoot);
         settings.LibraryMappings[0].TargetPath = targetRoot;
-        var mapped = await SoftwareBackupCodec.ApplyLibraryMappingsAsync(await NativeAsync([NativeGame(remote)]), settings, [remote], Work());
+        var mapped = await SoftwareBackupCodec.MergeAsync(await NativeAsync([NativeGame(remote)]), package.DataPath!, package.MediaPath,
+            settings.Content, settings, [remote], Work());
         var source = ReadEntry(mapped.ArchivePath, "data.galgameSources.json")[0]!;
-        Check(source["Galgames"]![0]!["Path"]!.GetValue<string>() == gameRoot && source["ImagePath"]!.GetValue<string>().Contains("pvn_library_"), "新库映射或图片还原不正确");
+        Check(source["Galgames"]![0]!["Path"]!.GetValue<string>() == gameRoot && source["ImagePath"]!.GetValue<string>().Contains("pvn_"), "旧版已确认目录或图片未正确保留");
         Check(source["_DataBackupImages"] is null, "本机待映射附加信息进入了宿主");
+    }
+
+    private static async Task SameDeviceLibraryAsync()
+    {
+        string originalRoot = Work(), movedRoot = Work();
+        string install = Directory.CreateDirectory(Path.Combine(originalRoot, "Game")).FullName;
+        var game = Game(directory: install);
+        Guid libraryId = Guid.NewGuid();
+        JsonObject Library(string root, string name, JsonArray members) => new()
+        {
+            ["Id"] = libraryId.ToString(), ["SourceType"] = 1, ["Name"] = name, ["Path"] = root,
+            ["Galgames"] = members
+        };
+        var setup = Coordinator(BackupContent.GameInfo | BackupContent.LibrariesAndCategories, game);
+        setup.Host.Libraries = new JsonArray(Library(originalRoot, "备份时的库", new JsonArray(
+            new JsonObject { ["Galgame"] = game.Id.ToString(), ["Path"] = install })));
+        SnapshotManifest snapshot = await setup.Coordinator.BackupAsync();
+        game.LocalDirectory = null;
+        string movedInstall = Directory.CreateDirectory(Path.Combine(movedRoot, "Game")).FullName;
+        setup.Host.Libraries = new JsonArray(Library(movedRoot, "本机改过的库名", new JsonArray()));
+        await setup.Coordinator.StageRestoreAsync(snapshot, setup.Settings.Content);
+        var library = setup.Host.ImportedLibraries!.Single()!.AsObject();
+        Check(library["Id"]!.ToString() == libraryId.ToString() && library["Name"]!.ToString() == "本机改过的库名" &&
+            library["Path"]!.ToString() == movedRoot && library["Galgames"]![0]!["Path"]!.ToString() == movedInstall,
+            "同设备未沿用现有库ID与当前目录");
+        Check(setup.Settings.LibraryMappings.Single().TargetLibraryId == libraryId, "库ID未保存");
+
+        // 本机库已丢失且只剩插件里的旧对应关系时，仍可恢复有效的原库目录与成员。
+        setup.Host.Libraries = new JsonArray();
+        await setup.Coordinator.StageRestoreAsync(snapshot, setup.Settings.Content);
+        library = setup.Host.ImportedLibraries!.Single()!.AsObject();
+        Check(library["Id"]!.ToString() == libraryId.ToString() && library["Path"]!.ToString() == originalRoot &&
+            library["Galgames"]![0]!["Path"]!.ToString() == install, "同设备缺失的库没有按有效原目录重建");
+
+        // 同样的绝对路径在别的设备上可能存在，依旧先等待确认。
+        setup.Settings.LibraryMappings.Clear();
+        setup.Settings.DeviceId = Guid.NewGuid();
+        await setup.Coordinator.StageRestoreAsync(snapshot, setup.Settings.Content);
+        Check(setup.Host.ImportedLibraries!.Count == 0 && setup.Settings.LibraryMappings.Single().TargetPath == null,
+            "跨设备误用了同名路径");
     }
 
     private static async Task CategoryScopeAsync()
@@ -487,10 +529,17 @@ internal static partial class EngineTests
     {
         public int ImportCalls { get; private set; }
         public JsonArray? ImportedGames { get; private set; }
+        public JsonArray? Libraries { get; set; }
+        public JsonArray? ImportedLibraries { get; private set; }
         public IReadOnlyList<GameIdentity> GetGames() => games;
-        public Task<HostExport> ExportAsync(string workDirectory, CancellationToken cancellationToken) => NativeAsync(games.Select(g => NativeGame(g)));
+        public Task<HostExport> ExportAsync(string workDirectory, CancellationToken cancellationToken) => NativeAsync(games.Select(g => NativeGame(g)), libraries: Libraries);
         public Task StageImportAsync(string mergedArchivePath, Dictionary<string, JsonNode?> settings, CancellationToken cancellationToken)
-        { ImportCalls++; ImportedGames = ReadEntry(mergedArchivePath, "data.galgames.json").AsArray(); return Task.CompletedTask; }
+        {
+            ImportCalls++;
+            ImportedGames = ReadEntry(mergedArchivePath, "data.galgames.json").AsArray();
+            ImportedLibraries = ReadEntry(mergedArchivePath, "data.galgameSources.json").AsArray();
+            return Task.CompletedTask;
+        }
     }
     private sealed class MemoryProvider : IBackupProvider
     {
@@ -517,7 +566,8 @@ internal static partial class EngineTests
         public async Task DownloadAsync(string path, string localFile, CancellationToken cancellationToken = default)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(localFile)!);
-            await File.WriteAllBytesAsync(localFile, Files[path], cancellationToken);
+            if (!Files.TryGetValue(path, out byte[]? bytes)) throw new FileNotFoundException("远端文件不存在。", path);
+            await File.WriteAllBytesAsync(localFile, bytes, cancellationToken);
         }
         public Task DeleteAsync(string path, CancellationToken cancellationToken = default) { Files.Remove(path); return Task.CompletedTask; }
     }

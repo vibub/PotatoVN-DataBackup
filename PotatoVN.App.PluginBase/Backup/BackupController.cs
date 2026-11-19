@@ -230,14 +230,20 @@ public sealed class BackupController : IBackupUiController, IDisposable
         Status = "已清理本机暂存副本；云端和实际游戏存档保持原样。";
     }, ct);
 
-    public Task ApplyLibraryMappingAsync(string libraryId, string targetRoot, CancellationToken ct) => RunAsync("正在准备库目录映射…", async token =>
-    {
-        string full = Path.GetFullPath(targetRoot);
-        if (!Directory.Exists(full)) throw new DirectoryNotFoundException("选择的本机库目录不存在。");
-        PendingLibraryMapping mapping = Settings.LibraryMappings.Single(m => m.Id == libraryId);
-        mapping.TargetPath = full;
-        await _coordinator.ApplyLibraryMappingsAsync(token);
-    }, ct);
+    public IReadOnlyList<LocalLibrary> GetLocalLibraries() => _host.GetLocalLibraries();
+
+    public Task ApplyLibraryMappingAsync(string libraryId, string targetRoot, Guid? targetLibraryId, CancellationToken ct) =>
+        RunAsync("正在关联本机游戏库…", async token =>
+        {
+            PendingLibraryMapping mapping = Settings.LibraryMappings.Single(m => m.Id == libraryId);
+            var (library, linked) = await _host.ApplyLibraryMappingAsync(mapping, targetRoot, targetLibraryId, token);
+            mapping.TargetLibraryId = library.Id;
+            mapping.TargetPath = library.Path;
+            await _store.SaveAsync(Settings);
+            _pending.Refresh(GetGames(), Settings.GameMappings);
+            await _pending.SaveAsync();
+            Status = $"已关联到“{library.Name}”，新增或修复 {linked} 个游戏的库关系。";
+        }, ct);
 
     public void CancelCurrentOperation() => _current?.Cancel();
 

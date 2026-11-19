@@ -85,6 +85,7 @@ public sealed partial class BackupSettingsView : UserControl
             {
                 _pageScroll.Content = _pages[index];
                 _pageScroll.ChangeView(null, 0, null, true);
+                RefreshLibraryView();
                 UpdateFeedbackVisibility();
             }
         };

@@ -27,8 +27,7 @@ public sealed partial class PotatoHostAdapter
         documents["data.galgames.json"] = await OnMainAsync(() => writer.Serialize(_api.GetAllGames()));
         documents["data.galgameSources.json"] = await OnMainAsync(() =>
         {
-            object service = Service("GalgameManager.Contracts.Services.IGalgameSourceCollectionService");
-            return writer.Serialize(service.GetType().GetMethod("GetGalgameSources")!.Invoke(service, null), gameConverter);
+            return writer.Serialize(GetSources(SourceService()), gameConverter);
         });
         Task groups = await OnMainAsync(() =>
         {

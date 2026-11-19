@@ -105,13 +105,18 @@ public sealed partial class BackupSettingsView
         return block;
     }
 
-    private static Grid PathLine(string label, string path)
+    private static Grid PathLine(string label, string path, bool wrap = false)
     {
         var line = new Grid { ColumnSpacing = 8 };
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         line.Children.Add(SecondaryText(label));
-        TextBlock value = PathText(path);
+        TextBlock value = wrap ? SecondaryText(path) : PathText(path);
+        if (wrap)
+        {
+            value.IsTextSelectionEnabled = true;
+            ToolTipService.SetToolTip(value, path);
+        }
         Grid.SetColumn(value, 1);
         line.Children.Add(value);
         return line;

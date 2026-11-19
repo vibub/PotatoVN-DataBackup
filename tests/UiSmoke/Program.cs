@@ -11,6 +11,7 @@ using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using PotatoVN.App.PluginBase.BackupUi;
 using PotatoVN.Backup.Core;
+using PotatoVN.Backup.Core.Engine;
 using Windows.Graphics.Imaging;
 using Windows.Storage;
 using Windows.Storage.Streams;
@@ -223,6 +224,7 @@ public sealed partial class SmokeApp : Application
                 navigation.SelectedIndex = 4;
                 await Task.Delay(120);
                 await CheckPendingTargetSwitchAsync(view, controller, results);
+                await CheckPendingAndLibraryFiltersAsync(view, controller, navigation, results);
                 await CheckHistoryUiAsync(view, controller, host, navigation, results);
                 navigation.SelectedIndex = 0;
                 await RunMatchingSmokeAsync(view, controller, results);
@@ -589,6 +591,40 @@ public sealed partial class SmokeApp : Application
         for (int index = 0; index < VisualTreeHelper.GetChildrenCount(parent); index++)
             foreach (T child in FindAll<T>(VisualTreeHelper.GetChild(parent, index))) yield return child;
     }
+    private static async Task CheckPendingAndLibraryFiltersAsync(BackupSettingsView view, DemoController controller,
+        Pivot navigation, List<string> results)
+    {
+        ListView pending = Field<ListView>(view, "_pendingList");
+        var statuses = Field<Dictionary<RestoreStatus, CheckBox>>(view, "_pendingStatusFilters");
+        statuses[RestoreStatus.Ready].IsChecked = true;
+        statuses[RestoreStatus.Restored].IsChecked = true;
+        Check(pending.Items.Count == 2, "状态勾选应显示任一选中状态。");
+        StackPanel versionFilters = Field<StackPanel>(view, "_pendingVersionFilters");
+        CheckBox version = versionFilters.Children.OfType<CheckBox>().Last();
+        version.IsChecked = true;
+        Check(pending.Items.Count <= 1, "版本与状态筛选应取交集。");
+        version.IsChecked = false;
+        statuses[RestoreStatus.Ready].IsChecked = false;
+        statuses[RestoreStatus.Restored].IsChecked = false;
+        Check(pending.Items.Count == controller.GetPending().Count, "清除勾选后应恢复全部存档。");
+
+        navigation.SelectedIndex = 5;
+        await Task.Delay(120);
+        StackPanel libraries = Field<StackPanel>(view, "_libraryRows");
+        ComboBox picker = FindAll<ComboBox>(libraries).Single(combo => Equals(combo.Header, "本机游戏库"));
+        TextBox target = FindAll<TextBox>(libraries).Single(box => Equals(box.Header, "本机文件夹"));
+        string original = controller.Settings.LibraryMappings.Single().OriginalPath;
+        TextBlock oldPath = FindAll<TextBlock>(libraries).Single(block => block.Text == original);
+        Check(oldPath.TextWrapping == TextWrapping.Wrap && oldPath.IsTextSelectionEnabled, "旧设备路径应完整显示、可换行和复制。");
+        picker.SelectedIndex = 0;
+        await Task.Delay(50);
+        Check(target.Text == controller.GetLocalLibraries().Single().Path, "选择本机库应填入其真实路径。");
+        target.Text = @"D:\OtherLibrary";
+        await Task.Delay(50);
+        Check(picker.SelectedItem == null, "手动编辑路径后不能仍提交上一个库的ID。");
+        results.Add("PASS library-and-pending-filters: full path, local library selection, checkbox union and intersection");
+    }
+
     private static T? Find<T>(DependencyObject parent) where T : DependencyObject
     {
         if (parent is T target) return target;
@@ -622,7 +658,12 @@ internal sealed class DemoController : IBackupUiController
             Manifest = new SaveManifest { Game = _games[0], Id = status.ToString(), CapturedUtc = DateTimeOffset.UtcNow,
                 ManifestPath = "v1/saves/demo/" + status + "/manifest.json", Locations = [new SaveLocation { Id = "demo-root", BaseKind = SaveBaseKind.GameRoot, RelativePath = "savedata" }] }
         }).ToList();
-        Settings.LibraryMappings.Add(new PendingLibraryMapping { Id = "demo-library", Name = "旧设备游戏库（演示）", OriginalPath = "D:\\Games" });
+        Settings.LibraryMappings.Add(new PendingLibraryMapping
+        {
+            Id = "demo-library", Name = "旧设备游戏库（演示）",
+            OriginalPath = @"D:\Program\Galgame\Archive\LocalGames\HEAT-SOFT", SourceJson = """{"SourceType":1}"""
+        });
+        Libraries = [new LocalLibrary(Guid.NewGuid(), "本机游戏库（演示）", local, LibraryKind.Folder)];
     }
     public string? CoverOverride { get; set; }
     public string? GetGameCoverPath(Guid gameId) => gameId == _games[0].Id
@@ -683,5 +724,7 @@ internal sealed class DemoController : IBackupUiController
     public Task ConfigurePendingAsync(Guid id, Guid? game, string? path, CancellationToken token) => Disabled();
     public Task RestorePendingAsync(IReadOnlyList<Guid> ids, CancellationToken token) => Disabled();
     public Task ClearPendingAsync(IReadOnlyList<Guid> ids, CancellationToken token) => Disabled();
-    public Task ApplyLibraryMappingAsync(string id, string target, CancellationToken token) => Disabled();
+    private IReadOnlyList<LocalLibrary> Libraries { get; }
+    public IReadOnlyList<LocalLibrary> GetLocalLibraries() => Libraries;
+    public Task ApplyLibraryMappingAsync(string id, string target, Guid? targetLibraryId, CancellationToken token) => Disabled();
 }

@@ -90,6 +90,7 @@ public sealed class PendingLibraryMapping
     public string Name { get; set; } = "";
     public string OriginalPath { get; set; } = "";
     public string? TargetPath { get; set; }
+    public Guid? TargetLibraryId { get; set; }
     public string SourceJson { get; set; } = "";
 }
 

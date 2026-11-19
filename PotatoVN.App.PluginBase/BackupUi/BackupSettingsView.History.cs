@@ -4,9 +4,11 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using PotatoVN.Backup.Core;
+using PotatoVN.Backup.Core.Engine;
 
 namespace PotatoVN.App.PluginBase.BackupUi;
 
@@ -21,8 +23,9 @@ public sealed partial class BackupSettingsView
     private readonly TextBlock _snapshotNotices = Note("");
     private readonly Expander _snapshotNoticeExpander = new() { Header = "备份提示", HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
     private readonly GameSearchPicker _mapLocalGame = new("本机游戏");
+    private const int LibraryPageIndex = 5;
     private readonly StackPanel _libraryRows = Stack(16);
-    private readonly Dictionary<string, string> _libraryTargetDrafts = new();
+    private readonly Dictionary<string, (string Path, Guid? LibraryId)> _libraryTargetDrafts = new();
     private Guid? _historyProfileId;
     private Dictionary<Guid, Guid> _historyTargets = new();
 
@@ -205,48 +208,85 @@ public sealed partial class BackupSettingsView
     {
         var panel = Stack();
         panel.Children.Add(Heading("关联这台电脑的游戏库"));
-        panel.Children.Add(Note("选择旧游戏库在这台电脑上的对应文件夹。"));
+        panel.Children.Add(Note("选择本机游戏库，或指定对应的文件夹。"));
         panel.Children.Add(_libraryRows);
         panel.Children.Add(ActionButton("刷新游戏库列表", _ => { RefreshLibraryView(); return Task.CompletedTask; }));
-        RefreshLibraryView();
         return panel;
     }
 
     private void RefreshLibraryView()
     {
-        if (_libraryRows == null) return;
+        if (_navigation.SelectedIndex != LibraryPageIndex) return;
         _libraryRows.Children.Clear();
         if (_controller.Settings.LibraryMappings.Count == 0)
         {
             _libraryRows.Children.Add(Note("暂无需要关联的游戏库。"));
             return;
         }
+        IReadOnlyList<LocalLibrary> libraries = _controller.GetLocalLibraries();
+        bool enabled = _operationCts == null && !_controller.IsBusy;
         foreach (PendingLibraryMapping mapping in _controller.Settings.LibraryMappings)
         {
+            LibraryKind? kind = LibraryAssociation.GetKind(JsonNode.Parse(mapping.SourceJson)!.AsObject());
+            LocalLibrary[] choices = libraries.Where(library => library.Kind == kind).ToArray();
+            LocalLibrary? current = mapping.TargetLibraryId is { } id
+                ? choices.FirstOrDefault(library => library.Id == id)
+                : choices.FirstOrDefault(library => LibraryAssociation.SamePath(library.Path, mapping.TargetPath));
             var group = Stack(8);
             group.Children.Add(Heading(mapping.Name, "BodyStrongTextBlockStyle"));
-            group.Children.Add(StatusBadge(System.IO.Directory.Exists(mapping.TargetPath) ? "已关联" : "待关联",
-                System.IO.Directory.Exists(mapping.TargetPath) ? StatusTone.Success : StatusTone.Warning));
-            group.Children.Add(PathLine("旧设备位置", mapping.OriginalPath));
-            var target = TextInput("这台电脑上的对应文件夹", "点击浏览选择，或粘贴文件夹路径");
-            target.Text = _libraryTargetDrafts.GetValueOrDefault(mapping.Id) ?? mapping.TargetPath ?? "";
-            target.TextChanged += (_, _) => _libraryTargetDrafts[mapping.Id] = target.Text;
+            group.Children.Add(StatusBadge(current != null ? "已关联" : "待关联",
+                current != null ? StatusTone.Success : StatusTone.Warning));
+            group.Children.Add(PathLine("旧设备位置", mapping.OriginalPath, wrap: true));
+
+            var (draftPath, draftLibraryId) = _libraryTargetDrafts.GetValueOrDefault(mapping.Id,
+                (current?.Path ?? mapping.TargetPath ?? "", current?.Id));
+            var target = TextInput("本机文件夹", "浏览或输入文件夹路径");
+            target.Text = draftPath;
+            target.IsEnabled = enabled;
+            var picker = new ComboBox
+            {
+                Header = "本机游戏库", PlaceholderText = choices.Length == 0 ? "暂无可用游戏库" : "选择现有游戏库",
+                ItemsSource = choices, IsEnabled = enabled && choices.Length > 0,
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                SelectedItem = choices.FirstOrDefault(library => library.Id == draftLibraryId)
+            };
+            picker.SelectionChanged += (_, _) =>
+            {
+                if (picker.SelectedItem is not LocalLibrary library) return;
+                target.Text = library.Path;
+                _libraryTargetDrafts[mapping.Id] = (library.Path, library.Id);
+            };
+            target.TextChanged += (_, _) =>
+            {
+                var library = picker.SelectedItem as LocalLibrary;
+                if (library != null && !string.Equals(library.Path, target.Text, StringComparison.OrdinalIgnoreCase))
+                {
+                    picker.SelectedItem = null;
+                    library = null;
+                }
+                _libraryTargetDrafts[mapping.Id] = (target.Text, library?.Id);
+            };
+            group.Children.Add(picker);
             group.Children.Add(target);
             var actions = Row();
             Button browse = BrowsePathButton(target);
-            browse.IsEnabled = _operationCts == null && !_controller.IsBusy;
+            browse.IsEnabled = enabled;
             actions.Children.Add(browse);
-            var apply = new Button { Content = "确认并关联此游戏库…", IsEnabled = _operationCts == null && !_controller.IsBusy };
+            var apply = new Button { Content = "确认并关联此游戏库…", IsEnabled = enabled && kind != null };
             apply.Click += async (_, _) => await RunAsync(async ct =>
             {
-                string path = target.Text.Trim();
+                var library = picker.SelectedItem as LocalLibrary;
+                string path = library?.Path ?? target.Text.Trim();
                 if (!Path.IsPathFullyQualified(path) || !Directory.Exists(path))
                     throw new InvalidOperationException("请选择这台电脑上已存在的游戏库文件夹。");
-                if (await DialogAsync("确认游戏库对应位置", Note($"将“{mapping.Name}”关联到：\n{path}\n\n只会关联该文件夹内可确认的游戏；存档仍需在待恢复存档手动恢复。"), "关联此游戏库") != ContentDialogResult.Primary)
-                    return;
-                await _controller.ApplyLibraryMappingAsync(mapping.Id, path, ct);
+                string destination = library == null ? path : $"{library.Name}\n{path}";
+                if (await DialogAsync("确认游戏库对应位置",
+                    Note($"将“{mapping.Name}”关联到：\n{destination}\n\n关联即时生效。存档可在“待恢复存档”中手动恢复。"),
+                    "关联此游戏库") != ContentDialogResult.Primary) return;
+                await _controller.ApplyLibraryMappingAsync(mapping.Id, path, library?.Id, ct);
                 _libraryTargetDrafts.Remove(mapping.Id);
-            }, successMessage: "游戏库已关联。");
+                ShowMessage(_controller.Status, InfoBarSeverity.Success);
+            }, showSuccess: false);
             actions.Children.Add(apply);
             group.Children.Add(actions);
             _libraryRows.Children.Add(group);
