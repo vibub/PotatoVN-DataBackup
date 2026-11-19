@@ -44,14 +44,12 @@ public sealed partial class BackupSettingsView
     private StackPanel BuildContentTab()
     {
         var panel = Stack(12);
-        var header = Row();
-        header.Children.Add(SectionHeading("手动备份内容"));
         var goToSaves = new Button { Content = "配置存档位置" };
         SetButtonStyle(goToSaves, "SubtleButtonStyle");
         goToSaves.Click += (_, _) =>
         {
             _saveGameSearch.Focus(FocusState.Programmatic);
-            DispatcherQueue.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
+            _uiDispatcher.TryEnqueue(Microsoft.UI.Dispatching.DispatcherQueuePriority.Low, () =>
             {
                 if (_navigation.SelectedIndex != 1) return;
                 double top = _saveLocationHeading.TransformToVisual(_pageScroll).TransformPoint(new Windows.Foundation.Point()).Y;
@@ -59,8 +57,7 @@ public sealed partial class BackupSettingsView
                 _pageScroll.ChangeView(null, Math.Clamp(offset, 0, _pageScroll.ScrollableHeight), null, true);
             });
         };
-        header.Children.Add(goToSaves);
-        panel.Children.Add(header);
+        panel.Children.Add(AlignedPair(SectionHeading("手动备份内容"), goToSaves, VerticalAlignment.Center));
         var content = Stack(4);
         BuildContentChoices(content, _contentChecks, _controller.Settings.Content);
         panel.Children.Add(Surface(content));

@@ -159,6 +159,20 @@ public sealed partial class SmokeApp : Application
                         AssertPageAlignment(contentScroll, save, index);
                         Check(contentScroll.VerticalOffset <= 1 && contentScroll.ViewportHeight > 0,
                             "切换页签后正文应从顶部开始，并保有可用高度。");
+                        if (index == 1)
+                        {
+                            TextBlock heading = FindAll<TextBlock>(contentScroll).Single(text => text.Text == "手动备份内容");
+                            Button jump = FindButton(view, "配置存档位置");
+                            double headingCenter = PositionY(heading, contentScroll) + heading.ActualHeight / 2;
+                            double jumpCenter = PositionY(jump, contentScroll) + jump.ActualHeight / 2;
+                            Check(Math.Abs(headingCenter - jumpCenter) < 1, "存档快捷入口应与手动备份标题垂直居中。");
+                            CheckBox configured = Field<CheckBox>(view, "_saveGameConfigured");
+                            double filterY = PositionY(configured, contentScroll);
+                            Check(configured.ActualHeight > 0 &&
+                                Math.Abs(PositionY(Field<CheckBox>(view, "_saveGameUnconfigured"), contentScroll) - filterY) < 1 &&
+                                Math.Abs(PositionY(Field<CheckBox>(view, "_saveGameLocal"), contentScroll) - filterY) < 1,
+                                "三个存档筛选条件应排在同一行。");
+                        }
                         if (index == 4)
                         {
                             ListView saves = Field<ListView>(view, "_pendingList");
@@ -172,6 +186,14 @@ public sealed partial class SmokeApp : Application
                             double refreshCenter = PositionY(refresh, contentScroll) + refresh.ActualHeight / 2;
                             double summaryCenter = PositionY(summary, contentScroll) + summary.ActualHeight / 2;
                             Check(Math.Abs(refreshCenter - summaryCenter) < 1, "刷新按钮应与左侧统计文字垂直居中对齐。");
+                        }
+                        if (index == 5)
+                        {
+                            Button apply = FindButton(view, "确认并关联此游戏库…");
+                            TextBlock timing = FindAll<TextBlock>(contentScroll).Single(text => text.Text == "确认后立即生效");
+                            double applyBottom = PositionY(apply, contentScroll) + apply.ActualHeight;
+                            double timingBottom = PositionY(timing, contentScroll) + timing.ActualHeight;
+                            Check(Math.Abs(applyBottom - timingBottom) < 1, "立即生效提示的下边缘应与关联按钮对齐。");
                         }
                         if (size.Width == 1080) await CaptureAsync(host, $"settings-{size.Width}x{size.Height}-page-{index}-top.png");
                         double navigationY = PositionY(navigation, hostScroll);

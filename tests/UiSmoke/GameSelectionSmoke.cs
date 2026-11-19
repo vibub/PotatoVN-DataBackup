@@ -149,7 +149,9 @@ public sealed partial class SmokeApp
                 await Task.Delay(180);
                 Grid layout = Field<Grid>(view, "_saveGameLayout");
                 StackPanel details = Field<StackPanel>(view, "_saveGameDetails");
-                Check(Grid.GetColumn(details) == (width == 1080 ? 1 : 0) && Grid.GetRow(details) == (width == 1080 ? 1 : 2),
+                var detailsOffset = details.TransformToVisual(saveGames).TransformPoint(new Windows.Foundation.Point());
+                Check(width == 1080 ? detailsOffset.X > 300 && Math.Abs(detailsOffset.Y) < 1
+                        : Math.Abs(detailsOffset.X) < 1 && detailsOffset.Y >= saveGames.ActualHeight,
                     "存档列表在宽窗口应左右分栏，窄窗口应上下排列。");
                 Check(saveGames.ActualHeight <= 361 && content.ScrollableWidth < 1, "大量游戏不能撑高选择列表或造成横向裁切。");
                 double top = layout.TransformToVisual(content).TransformPoint(new Windows.Foundation.Point()).Y + content.VerticalOffset;

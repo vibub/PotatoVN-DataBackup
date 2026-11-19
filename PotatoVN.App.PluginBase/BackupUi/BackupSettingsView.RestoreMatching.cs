@@ -76,7 +76,7 @@ public sealed partial class BackupSettingsView
             }
         };
         ContentDialogResult accepted;
-        using (ct.Register(() => DispatcherQueue.TryEnqueue(() => dialog.Hide())))
+        using (ct.Register(() => _uiDispatcher.TryEnqueue(() => dialog.Hide())))
             accepted = await dialog.ShowAsync();
         ct.ThrowIfCancellationRequested();
         if (accepted != ContentDialogResult.Primary || result == null) return (false, null);
@@ -93,7 +93,7 @@ public sealed partial class BackupSettingsView
             summary.Children.Add(Note("两份本地记录存在差异时，保留目标条目；所选类型再使用云端备份值。原始数据由导入回滚副本保留。"));
             var mergeDialog = NewDialog("确认调整已有对应关系", new ScrollViewer { Content = summary, MaxHeight = 400 }, "合并记录并恢复");
             ContentDialogResult mergeAccepted;
-            using (ct.Register(() => DispatcherQueue.TryEnqueue(() => mergeDialog.Hide())))
+            using (ct.Register(() => _uiDispatcher.TryEnqueue(() => mergeDialog.Hide())))
                 mergeAccepted = await mergeDialog.ShowAsync();
             ct.ThrowIfCancellationRequested();
             if (mergeAccepted != ContentDialogResult.Primary) return (false, null);

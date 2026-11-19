@@ -293,7 +293,6 @@ public sealed partial class BackupSettingsView
             browse.IsEnabled = enabled;
             folder.Children.Add(browse);
             group.Children.Add(ResponsiveColumns(picker, folder));
-            var actions = Row();
             apply.Click += async (_, _) => await RunAsync(async ct =>
             {
                 var library = picker.SelectedItem as LocalLibrary;
@@ -308,11 +307,7 @@ public sealed partial class BackupSettingsView
                 _libraryTargetDrafts.Remove(mapping.Id);
                 ShowMessage(_controller.Status, InfoBarSeverity.Success);
             }, showSuccess: false);
-            actions.Children.Add(apply);
-            var timing = SecondaryText("确认后立即生效");
-            timing.VerticalAlignment = VerticalAlignment.Center;
-            actions.Children.Add(timing);
-            group.Children.Add(actions);
+            group.Children.Add(AlignedPair(apply, SecondaryText("确认后立即生效"), VerticalAlignment.Bottom));
             _libraryRows.Children.Add(Surface(group));
         }
     }

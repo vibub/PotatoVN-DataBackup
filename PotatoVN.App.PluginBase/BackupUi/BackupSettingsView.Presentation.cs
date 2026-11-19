@@ -42,6 +42,18 @@ public sealed partial class BackupSettingsView
         Text = text, FontSize = 16, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap
     };
 
+    private static Grid AlignedPair(FrameworkElement left, FrameworkElement right, VerticalAlignment alignment)
+    {
+        var grid = new Grid { ColumnSpacing = 8, HorizontalAlignment = HorizontalAlignment.Left };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        left.VerticalAlignment = right.VerticalAlignment = alignment;
+        grid.Children.Add(left);
+        Grid.SetColumn(right, 1);
+        grid.Children.Add(right);
+        return grid;
+    }
+
     private static void SetButtonStyle(Button button, string? key)
     {
         if (key != null && Application.Current.Resources.TryGetValue(key, out object? value) && value is Style style)

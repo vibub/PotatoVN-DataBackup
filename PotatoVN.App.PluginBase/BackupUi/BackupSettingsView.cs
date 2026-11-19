@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
@@ -15,6 +16,7 @@ namespace PotatoVN.App.PluginBase.BackupUi;
 public sealed partial class BackupSettingsView : UserControl
 {
     private readonly IBackupUiController _controller;
+    private readonly DispatcherQueue _uiDispatcher;
     private readonly Func<IntPtr>? _getWindowHandle;
     private readonly List<(Control Control, Func<bool>? CanExecute)> _operationControls = new();
     private readonly List<Control> _configurationTabs = new();
@@ -57,6 +59,9 @@ public sealed partial class BackupSettingsView : UserControl
     public BackupSettingsView(IBackupUiController controller, Func<IntPtr>? getWindowHandle = null)
     {
         _controller = controller;
+        // 直接获取宿主 UI 线程的队列，避开插件环境中无法解析的 DependencyObject.DispatcherQueue 调用。
+        _uiDispatcher = Microsoft.UI.Dispatching.DispatcherQueue.GetForCurrentThread()
+            ?? throw new InvalidOperationException("请在主线程打开云备份设置。");
         _getWindowHandle = getWindowHandle;
         var root = new Grid { Padding = new Thickness(16, 8, 16, 12), RowSpacing = 6, MaxWidth = 1040, HorizontalAlignment = HorizontalAlignment.Stretch };
         root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -194,7 +199,7 @@ public sealed partial class BackupSettingsView : UserControl
 
     private void ControllerStateChanged()
     {
-        DispatcherQueue.TryEnqueue(() =>
+        _uiDispatcher.TryEnqueue(() =>
         {
             RefreshStatus();
             RefreshPendingView();

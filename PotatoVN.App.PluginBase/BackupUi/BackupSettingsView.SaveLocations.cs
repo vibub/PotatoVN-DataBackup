@@ -17,16 +17,16 @@ public sealed partial class BackupSettingsView
 {
     private readonly ListView _saveGame = new() { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 360, HorizontalContentAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _saveGameSearch = TextInput("搜索存档游戏", "游戏名、目录或来源 ID");
-    private readonly CheckBox _saveGameConfigured = new() { Content = "已配置存档" };
-    private readonly CheckBox _saveGameUnconfigured = new() { Content = "未配置存档" };
-    private readonly CheckBox _saveGameLocal = new() { Content = "本机目录有效" };
+    private readonly CheckBox _saveGameConfigured = new() { Content = "已配置存档", MinWidth = 0 };
+    private readonly CheckBox _saveGameUnconfigured = new() { Content = "未配置存档", MinWidth = 0 };
+    private readonly CheckBox _saveGameLocal = new() { Content = "本机目录有效", MinWidth = 0 };
     private readonly TextBlock _saveLocationHeading = SectionHeading("各游戏存档位置");
     private readonly TextBlock _saveGameCount = SecondaryText("");
     private readonly TextBlock _saveGameHidden = SecondaryText("当前配置的游戏不在筛选结果中。");
     private readonly TextBlock _saveGameEmpty = Note("");
     private readonly TextBlock _saveGameTitle = Heading("", "BodyStrongTextBlockStyle");
     private readonly StackPanel _saveGameDetails = Stack();
-    private readonly Grid _saveGameLayout = new() { ColumnSpacing = 20, RowSpacing = 16 };
+    private readonly Grid _saveGameLayout = new() { ColumnSpacing = 20, RowSpacing = 12 };
     private IReadOnlyList<GameIdentity> _saveGames = Array.Empty<GameIdentity>();
     private Guid? _saveGameId;
     private static Guid? _lastSaveGameId;
@@ -42,7 +42,6 @@ public sealed partial class BackupSettingsView
     private void BuildSaveLocationControls(StackPanel panel)
     {
         var toolbar = Stack(8);
-        toolbar.Children.Add(_saveGameSearch);
         var filters = Row();
         filters.Children.Add(_saveGameConfigured);
         filters.Children.Add(_saveGameUnconfigured);
@@ -53,10 +52,13 @@ public sealed partial class BackupSettingsView
         _saveGameBrowser.Children.Add(_saveGameEmpty);
         _saveGameLayout.ColumnDefinitions.Add(new ColumnDefinition());
         _saveGameLayout.ColumnDefinitions.Add(new ColumnDefinition());
-        for (int index = 0; index < 3; index++)
+        for (int index = 0; index < 4; index++)
             _saveGameLayout.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        _saveGameLayout.Children.Add(_saveGameSearch);
+        Grid.SetRow(toolbar, 1);
+        Grid.SetColumnSpan(toolbar, 2);
         _saveGameLayout.Children.Add(toolbar);
-        Grid.SetRow(_saveGameBrowser, 1);
+        Grid.SetRow(_saveGameBrowser, 2);
         _saveGameLayout.Children.Add(_saveGameBrowser);
         _saveGameLayout.Children.Add(_saveGameDetails);
         void Arrange()
@@ -65,7 +67,7 @@ public sealed partial class BackupSettingsView
             _saveGameLayout.ColumnDefinitions[0].Width = wide ? new GridLength(300) : new GridLength(1, GridUnitType.Star);
             _saveGameLayout.ColumnDefinitions[1].Width = wide ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
             Grid.SetColumn(_saveGameDetails, wide ? 1 : 0);
-            Grid.SetRow(_saveGameDetails, wide ? 1 : 2);
+            Grid.SetRow(_saveGameDetails, wide ? 2 : 3);
         }
         _saveGameLayout.SizeChanged += (_, _) => Arrange();
         Arrange();
