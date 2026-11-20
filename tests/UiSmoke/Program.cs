@@ -132,6 +132,7 @@ public sealed partial class SmokeApp : Application
                     File.WriteAllLines(Path.Combine(Program.Output, "result.txt"), results);
                     return;
                 }
+                CheckProviderGuideLinks(controller, results);
                 await CheckFeedbackScopeAsync(view, controller, navigation, results);
                 await CheckFeedbackExpiryAsync(view, results);
                 await CheckBackupTaskAsync(view, controller, results);
@@ -493,6 +494,36 @@ public sealed partial class SmokeApp : Application
         timer.IsOn = false;
         onExit.IsOn = false;
         results.Add("PASS automation-inputs: timer and exit delay independently follow switches");
+    }
+
+    private static void CheckProviderGuideLinks(DemoController controller, List<string> results)
+    {
+        var view = new BackupSettingsView(controller);
+        ComboBox providers = Field<ComboBox>(view, "_providerKind");
+        StackPanel oneDrive = Field<StackPanel>(view, "_oauthFields");
+        StackPanel google = Field<StackPanel>(view, "_googleFields");
+        const string guideUrl = "https://github.com/vibub/PotatoVN-DataBackup/blob/sample/doc/cloud-providers.md";
+
+        foreach (var (kind, fields, section) in new[]
+        {
+            (ProviderKind.OneDrive, oneDrive, "onedrive"),
+            (ProviderKind.GoogleDrive, google, "google-drive")
+        })
+        {
+            providers.SelectedItem = providers.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, kind));
+            Check(fields.Visibility == Visibility.Visible &&
+                (fields == oneDrive ? google : oneDrive).Visibility == Visibility.Collapsed &&
+                fields.Children[0] is TextBlock { TextWrapping: TextWrapping.Wrap } note &&
+                note.Inlines.Last() is Microsoft.UI.Xaml.Documents.Hyperlink link &&
+                link.Inlines.Single() is Microsoft.UI.Xaml.Documents.Run { Text: "配置教程" } &&
+                link.NavigateUri.AbsoluteUri == $"{guideUrl}#{section}",
+                $"{kind} 的说明行末尾应显示指向对应教程小节的链接。");
+        }
+
+        providers.SelectedItem = providers.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, ProviderKind.WebDav));
+        Check(oneDrive.Visibility == Visibility.Collapsed && google.Visibility == Visibility.Collapsed,
+            "WebDAV 表单应隐藏两种 OAuth 渠道的教程链接。");
+        results.Add("PASS provider-guide-links: each OAuth provider shows its own inline guide; WebDAV hides both");
     }
 
     private static async Task CheckProfileSwitchingAsync(BackupSettingsView view, DemoController controller, List<string> results)

@@ -4,12 +4,15 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Documents;
 using PotatoVN.Backup.Core;
 
 namespace PotatoVN.App.PluginBase.BackupUi;
 
 public sealed partial class BackupSettingsView
 {
+    private const string CloudProviderGuideUrl = "https://github.com/vibub/PotatoVN-DataBackup/blob/sample/doc/cloud-providers.md";
+
     private readonly ComboBox _profilePick = new() { Header = "使用的备份渠道", HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly ComboBox _providerKind = new() { Header = "备份到哪里", HorizontalAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _profileName = TextInput("渠道名称（可选）", "留空按云盘类型命名");
@@ -79,11 +82,13 @@ public sealed partial class BackupSettingsView
         _webDavFields.Children.Add(Note("坚果云等服务需使用应用专用密码。"));
         form.Children.Add(_webDavFields);
         _oauthFields = Stack();
-        _oauthFields.Children.Add(Note("填写 Microsoft Entra 桌面应用的客户端 ID，登录时会打开浏览器。"));
+        _oauthFields.Children.Add(ProviderSetupNote(
+            "填写 Microsoft Entra 桌面应用的客户端 ID，登录时会打开浏览器。", "onedrive"));
         _oauthFields.Children.Add(_clientId);
         form.Children.Add(_oauthFields);
         _googleFields = Stack();
-        _googleFields.Children.Add(Note("在 Google Cloud 创建 OAuth 桌面应用，下载并粘贴 JSON 配置。"));
+        _googleFields.Children.Add(ProviderSetupNote(
+            "在 Google Cloud 创建 OAuth 桌面应用，下载并粘贴 JSON 配置。", "google-drive"));
         _googleFields.Children.Add(_googleConfigured);
         _googleFields.Children.Add(_googleJson);
         form.Children.Add(_googleFields);
@@ -142,6 +147,18 @@ public sealed partial class BackupSettingsView
         _password.PasswordChanged += (_, _) => ProfileFieldChanged();
         RefreshProfiles(_controller.Settings.ActiveProfileId);
         return panel;
+    }
+
+    private static TextBlock ProviderSetupNote(string text, string section)
+    {
+        var note = Note("");
+        note.Inlines.Add(new Run { Text = text + " " });
+
+        var link = new Hyperlink { NavigateUri = new Uri($"{CloudProviderGuideUrl}#{section}") };
+        link.Inlines.Add(new Run { Text = "配置教程" });
+        note.Inlines.Add(link);
+
+        return note;
     }
 
     private void ProfileFieldChanged()
