@@ -252,14 +252,23 @@ public static class SaveArchiveService
         return records;
     }
 
-    private static IEnumerable<string> EnumerateFiles(string root)
+    public static long? MeasureSize(string path, bool isFile, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (isFile) return File.Exists(path) ? new FileInfo(path).Length : null;
+        if (!Directory.Exists(path)) return null;
+        return EnumerateFiles(path, ct).Sum(file => new FileInfo(file).Length);
+    }
+
+    private static IEnumerable<string> EnumerateFiles(string root, CancellationToken ct = default)
     {
         foreach (var item in new DirectoryInfo(root).EnumerateFileSystemInfos())
         {
+            ct.ThrowIfCancellationRequested();
             if ((item.Attributes & FileAttributes.ReparsePoint) != 0)
                 throw new IOException("存档目录包含符号链接，请将实际存档目录单独添加：" + item.FullName);
             if (item is DirectoryInfo directory)
-                foreach (var file in EnumerateFiles(directory.FullName)) yield return file;
+                foreach (var file in EnumerateFiles(directory.FullName, ct)) yield return file;
             else yield return item.FullName;
         }
     }

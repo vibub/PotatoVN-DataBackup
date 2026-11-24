@@ -51,6 +51,20 @@ async Task Summary()
     var next = new SnapshotManifest { DataRecipe = new ArchiveRecipe { Files = [new FileRecord { Path = "new", Sha256 = "c" }, new FileRecord { Path = "edit", Sha256 = "d" }] }, SaveManifestPaths = ["save-new"] };
     string summary = BackupChangeSummary.Describe(old, next, [new SaveManifest { ManifestPath = "save-old", Game = game }, new SaveManifest { ManifestPath = "save-new", Game = game }]);
     Check(summary.Contains("新增 1、修改 1、移除 1") && summary.Contains("存档更新 1") && !summary.Contains("图片") && !summary.Contains("存档移出"), "摘要漏报删除或把存档更新误判为移出");
+    var oldImages = new SnapshotManifest
+    {
+        MediaRecipe = new ArchiveRecipe { Files = [Image("cover-a", "a"), Image("cover-b", "a"), Image("cover-c", "c")] }
+    };
+    var newImages = new SnapshotManifest
+    {
+        MediaRecipe = new ArchiveRecipe { Files = [Image("new-a", "a"), Image("new-b", "b"), Image("cover-c", "d")] }
+    };
+    Check(BackupChangeSummary.Describe(oldImages, newImages, []) == "图片新增 1 张、修改 1 张、移除 1 张、路径变更 1 张",
+        "相同图片内容应按路径一对一匹配，剩余文件仍应统计增减和修改。");
+    Check(BackupChangeSummary.Describe(new SnapshotManifest(), newImages, []) == "图片新增 3 张", "首次备份应将图片计为新增。");
+
+    static FileRecord Image(string path, string sha) => new() { Path = "Images/" + path, Sha256 = sha, Length = 1 };
+
     var fixture = Fixture.Create(root);
     fixture.Settings.Content = BackupContent.Saves;
     fixture.Settings.SaveConfigs.Clear();

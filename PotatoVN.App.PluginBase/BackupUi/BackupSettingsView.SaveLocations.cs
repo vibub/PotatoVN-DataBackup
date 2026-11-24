@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
@@ -15,6 +16,8 @@ namespace PotatoVN.App.PluginBase.BackupUi;
 
 public sealed partial class BackupSettingsView
 {
+    private const long SaveSizeWarningBytes = 10L * 1024 * 1024;
+
     private readonly ListView _saveGame = new() { SelectionMode = ListViewSelectionMode.Single, MaxHeight = 360, HorizontalContentAlignment = HorizontalAlignment.Stretch };
     private readonly TextBox _saveGameSearch = TextInput("搜索存档游戏", "游戏名、目录或来源 ID");
     private readonly CheckBox _saveGameConfigured = new() { Content = "已配置存档", MinWidth = 0 };
@@ -88,15 +91,15 @@ public sealed partial class BackupSettingsView
         locations.Children.Add(SectionHeading("存档位置"));
         var locationActions = Row();
         var addMenu = new MenuFlyout();
-        void AddChoice(string label, Func<Task> add)
+        void AddChoice(string label, Func<CancellationToken, Task> add)
         {
             var item = new MenuFlyoutItem { Text = label };
-            item.Click += async (_, _) => await RunAsync(_ => add(), successMessage: "存档位置已保存。");
+            item.Click += async (_, _) => await RunAsync(add, successMessage: "存档位置已保存。");
             addMenu.Items.Add(item);
         }
-        AddChoice("选择存档文件夹…", () => AddPickedSaveLocationAsync(false));
-        AddChoice("选择存档文件…", () => AddPickedSaveLocationAsync(true));
-        AddChoice("手动填写位置…", () => EditSaveLocationAsync(null));
+        AddChoice("选择存档文件夹…", ct => AddPickedSaveLocationAsync(false, ct));
+        AddChoice("选择存档文件…", ct => AddPickedSaveLocationAsync(true, ct));
+        AddChoice("手动填写位置…", ct => EditSaveLocationAsync(null, ct: ct));
         var addLocation = new DropDownButton { Content = "添加存档位置", Flyout = addMenu };
         _operationControls.Add((addLocation, () => _saveGameId != null));
         locationActions.Children.Add(addLocation);
@@ -110,10 +113,10 @@ public sealed partial class BackupSettingsView
         locations.Children.Add(_saveLocationHint);
         locations.Children.Add(_saveRoots);
         var actions = Row();
-        actions.Children.Add(ActionButton("编辑所选位置…", async _ =>
+        actions.Children.Add(ActionButton("编辑所选位置…", async ct =>
         {
             if (_saveRoots.SelectedItem is not ListViewItem { Tag: SaveLocationChoice choice }) throw new InvalidOperationException("请先选择一个存档位置。");
-            await EditSaveLocationAsync(choice.Location);
+            await EditSaveLocationAsync(choice.Location, ct: ct);
         }, successMessage: "存档位置已保存。", canExecute: () => _saveRoots.SelectedItem != null, style: "SubtleButtonStyle"));
         actions.Children.Add(ActionButton("移除所选位置", async _ =>
         {
@@ -160,12 +163,12 @@ public sealed partial class BackupSettingsView
         unconfigured.Unchecked += (_, _) => refresh();
     }
 
-    private async Task AddPickedSaveLocationAsync(bool isFile)
+    private async Task AddPickedSaveLocationAsync(bool isFile, CancellationToken ct)
     {
         if (_saveGameId is not Guid gameId) throw new InvalidOperationException("请先选择一个游戏。");
         string? gameDirectory = _controller.GetGames().First(game => game.Id == gameId).LocalDirectory;
         string? path = await PickPathAsync(isFile, gameDirectory);
-        if (path != null) await EditSaveLocationAsync(null, path, isFile);
+        if (path != null) await EditSaveLocationAsync(null, path, isFile, ct);
         else _operationDismissed = true;
     }
 
@@ -270,7 +273,7 @@ public sealed partial class BackupSettingsView
             suggestion.Children.Add(StatusBadge(candidate.IsFile ? "候选文件" : "候选文件夹", StatusTone.Info));
             suggestion.Children.Add(PathText(candidate.Path));
             var add = new Button { Content = "检查并添加…" };
-            add.Click += async (_, _) => await RunAsync(async _ => await EditSaveLocationAsync(null, candidate.Path, candidate.IsFile), successMessage: "存档位置已加入备份。");
+            add.Click += async (_, _) => await RunAsync(ct => EditSaveLocationAsync(null, candidate.Path, candidate.IsFile, ct), successMessage: "存档位置已加入备份。");
             suggestion.Children.Add(add);
             _saveSuggestions.Children.Add(suggestion);
         }
@@ -311,7 +314,50 @@ public sealed partial class BackupSettingsView
         return string.IsNullOrWhiteSpace(root) ? null : Path.Combine(root, location.RelativePath.Replace('/', Path.DirectorySeparatorChar));
     }
 
-    private async Task EditSaveLocationAsync(SaveLocation? existing, string? pickedPath = null, bool pickedFile = false)
+    private async Task CheckSaveSizesAsync(CancellationToken ct)
+    {
+        var games = _controller.GetGames().ToDictionary(game => game.Id);
+        var locations = _controller.Settings.SaveConfigs.SelectMany(config =>
+        {
+            GameIdentity? game = games.GetValueOrDefault(config.GameId);
+            return config.Locations.Select(location => (Game: game?.Name ?? "已移除的游戏",
+                Path: SaveLocationPath(location, game), location.IsFile));
+        }).ToArray();
+        var body = Stack(8);
+        if (locations.Length == 0)
+            body.Children.Add(Note("还没有配置存档位置。"));
+        else
+        {
+            var sizes = await Task.Run(() => locations.Select(location => (location.Game, location.Path,
+                Size: MeasureSaveLocation(location.Path, location.IsFile, ct))).ToArray(), ct);
+            ct.ThrowIfCancellationRequested();
+            int measured = sizes.Count(item => item.Size.Bytes.HasValue);
+            int large = sizes.Count(item => item.Size.Bytes > SaveSizeWarningBytes);
+            long total = sizes.Sum(item => item.Size.Bytes ?? 0);
+            body.Children.Add(Note($"已测量 {measured}/{sizes.Length} 处，原始大小合计 {BackupChangeSummary.Size(total)}，{large} 处超过 10 MB。"));
+            foreach (var item in sizes.OrderByDescending(item => item.Size.Bytes))
+            {
+                var row = Stack(4);
+                string label = item.Size.Bytes is long bytes ? BackupChangeSummary.Size(bytes) : "无法检测";
+                if (item.Size.Bytes > SaveSizeWarningBytes) label += "（超过 10 MB）";
+                row.Children.Add(Heading($"{item.Game} · {label}", "BodyStrongTextBlockStyle"));
+                row.Children.Add(Note(item.Path ?? "未找到本机路径。"));
+                if (item.Size.Error != null) row.Children.Add(Note(item.Size.Error));
+                body.Children.Add(row);
+            }
+        }
+        await DialogAsync("存档大小检测", new ScrollViewer { Content = body, MaxHeight = 460 }, primary: "", close: "关闭");
+    }
+
+    private static (long? Bytes, string? Error) MeasureSaveLocation(string? path, bool isFile, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        try { return (path == null ? null : SaveArchiveService.MeasureSize(path, isFile, ct), null); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        { return (null, error.Message); }
+    }
+
+    private async Task EditSaveLocationAsync(SaveLocation? existing, string? pickedPath = null, bool pickedFile = false, CancellationToken ct = default)
     {
         if (_saveGameId is not Guid gameId) throw new InvalidOperationException("请先选择一个游戏。");
         GameIdentity game = _controller.GetGames().First(g => g.Id == gameId);
@@ -350,6 +396,7 @@ public sealed partial class BackupSettingsView
         UpdatePreview();
         var dialog = NewDialog(existing == null ? "添加存档位置" : "编辑存档位置", body, "保存位置");
         SaveLocation? selected = null;
+        string checkedPath = "";
         dialog.PrimaryButtonClick += (_, args) =>
         {
             try
@@ -377,6 +424,7 @@ public sealed partial class BackupSettingsView
                     .Any(item => string.Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(item!)), full, StringComparison.OrdinalIgnoreCase)) == true;
                 if (duplicate) throw new InvalidOperationException("这个存档位置已加入备份，请编辑已有位置，不需要重复添加。");
                 selected = SaveArchiveService.Describe(full, game.LocalDirectory, isFile.IsChecked == true);
+                checkedPath = full;
                 error.IsOpen = false;
             }
             catch (Exception exception) when (exception is ArgumentException or IOException or InvalidOperationException or NotSupportedException)
@@ -384,8 +432,22 @@ public sealed partial class BackupSettingsView
                 error.Message = exception.Message; error.IsOpen = true; args.Cancel = true;
             }
         };
-        if (await dialog.ShowAsync() != ContentDialogResult.Primary || selected == null)
-            return;
+        while (true)
+        {
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary || selected == null) return;
+            bool checkFile = selected.IsFile;
+            var size = await Task.Run(() => MeasureSaveLocation(checkedPath, checkFile, ct), ct);
+            ct.ThrowIfCancellationRequested();
+            if (size.Bytes.GetValueOrDefault() <= SaveSizeWarningBytes && size.Error == null) break;
+
+            string title = size.Error == null ? "存档位置超过 10 MB" : "无法检测存档大小";
+            string detail = size.Bytes is long bytes
+                ? $"原始大小为 {BackupChangeSummary.Size(bytes)}（{bytes:N0} 字节）。" + (checkFile ? "" : "子文件夹也会参与备份。")
+                : size.Error!;
+            if (await DialogAsync(title, Note(detail), "继续保存", "返回修改") == ContentDialogResult.Primary) break;
+            _operationDismissed = false;
+        }
+        ct.ThrowIfCancellationRequested();
         SaveLocation location = existing ?? new SaveLocation();
         location.BaseKind = selected.BaseKind;
         location.RelativePath = selected.RelativePath;

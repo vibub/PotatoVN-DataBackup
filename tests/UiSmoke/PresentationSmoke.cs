@@ -78,8 +78,42 @@ public sealed partial class SmokeApp
         InvokePrimary(await WaitDialogAsync(view, "移除存档位置"));
         await WaitIdleAsync(view);
         Check(locations.Items.Count == originalCount && !edit.IsEnabled && !remove.IsEnabled, "确认移除后应刷新列表及操作状态。");
+        string largeFolder = Path.Combine(game.LocalDirectory!, "size-check");
+        string screenshotFolder = Directory.CreateDirectory(Path.Combine(largeFolder, "Screenshot")).FullName;
+        using (var screenshot = File.Create(Path.Combine(screenshotFolder, "example.png")))
+            screenshot.SetLength(10 * 1024 * 1024 + 1);
+
+        ContentDialog large = await OpenManualAsync();
+        FindAll<TextBox>(large).Single(box => Equals(box.Header, "存档路径")).Text = largeFolder;
+        int savesBeforeLarge = controller.SaveCalls;
+        InvokePrimary(large);
+        ContentDialog warning = await WaitDialogAsync(view, "存档位置超过 10 MB");
+        Check(controller.SaveCalls == savesBeforeLarge, "大文件夹必须在用户确认前保持未保存。");
+        warning.Hide();
+        ContentDialog returned = await WaitDialogAsync(view, "添加存档位置");
+        Check(FindAll<TextBox>(returned).Single(box => Equals(box.Header, "存档路径")).Text == largeFolder, "返回修改应保留原路径。");
+        InvokePrimary(returned);
+        InvokePrimary(await WaitDialogAsync(view, "存档位置超过 10 MB"));
+        await WaitIdleAsync(view);
+        Check(controller.SaveCalls == savesBeforeLarge + 1, "继续保存应只写入一次。");
+
+        Button checkSizes = FindButton(view, "检测存档大小");
+        Button refreshGames = FindButton(view, "刷新游戏列表");
+        Check(VisualTreeHelper.GetParent(checkSizes) is ActionRow scopeActions && scopeActions.Children.IndexOf(checkSizes) == scopeActions.Children.IndexOf(refreshGames) + 1,
+            "存档大小按钮应位于刷新游戏列表的右侧。");
+        InvokeButton(checkSizes);
+        ContentDialog report = await WaitDialogAsync(view, "存档大小检测");
+        Check(FindAll<TextBlock>(report).Any(text => text.Text.Contains($"{game.Name} · 10 MB（超过 10 MB）")) &&
+            FindAll<TextBlock>(report).Any(text => text.Text == largeFolder), "主动检测应显示实际目录及超限大小。");
+        report.Hide();
+        await WaitIdleAsync(view);
+        Check(controller.SaveCalls == savesBeforeLarge + 1, "主动检测只读取存档位置。");
+        locations.SelectedIndex = originalCount;
+        InvokeButton(remove);
+        InvokePrimary(await WaitDialogAsync(view, "移除存档位置"));
+        await WaitIdleAsync(view);
         page.ChangeView(null, 0, null, true);
-        results.Add("PASS save-location-menu: in-page jump and keyboard focus, selection retained across tabs, entry types, cancel/add/remove and action states");
+        results.Add("PASS save-location-menu: navigation, cancel/add/remove, nested folder size warning, return/confirm, and read-only size check");
     }
 
     private async Task CheckPresentationAsync(BackupSettingsView view, DemoController controller, Grid host, Pivot navigation, List<string> results)

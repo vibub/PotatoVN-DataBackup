@@ -618,7 +618,7 @@ public sealed partial class SmokeApp : Application
         Check(!FindAll<Button>(view).Any(button => button.Content as string == "检查并添加…"), "已加入备份的位置不应再次作为未配置候选显示。");
         int savesBefore = controller.SaveCalls;
         MethodInfo edit = typeof(BackupSettingsView).GetMethod("EditSaveLocationAsync", BindingFlags.Instance | BindingFlags.NonPublic)!;
-        Task duplicate = (Task)edit.Invoke(view, [null, expected + Path.DirectorySeparatorChar, false])!;
+        Task duplicate = (Task)edit.Invoke(view, [null, expected + Path.DirectorySeparatorChar, false, CancellationToken.None])!;
         ContentDialog duplicateDialog = await WaitDialogAsync(view, "添加存档位置");
         InvokePrimary(duplicateDialog);
         await Task.Delay(150);

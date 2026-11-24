@@ -85,12 +85,15 @@ public sealed partial class BackupSettingsView
         _specificGames.Checked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
         _specificGames.Unchecked += (_, _) => { UpdateGameScope(); MarkSettingsDirty(); };
         BuildGameSelection(scope);
-        scope.Children.Add(ActionButton("刷新游戏列表", _ =>
+        var scopeActions = Row();
+        scopeActions.Children.Add(ActionButton("刷新游戏列表", _ =>
         {
             RefreshGameSelection(true);
             RefreshSaveGameChoices();
             return Task.CompletedTask;
         }, style: "SubtleButtonStyle"));
+        scopeActions.Children.Add(ActionButton("检测存档大小", CheckSaveSizesAsync, style: "SubtleButtonStyle"));
+        scope.Children.Add(scopeActions);
         panel.Children.Add(Surface(scope));
         panel.Children.Add(_saveLocationHeading);
         BuildSaveLocationControls(panel);
