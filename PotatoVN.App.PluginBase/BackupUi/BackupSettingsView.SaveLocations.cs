@@ -339,10 +339,24 @@ public sealed partial class BackupSettingsView
             {
                 var row = Stack(4);
                 string label = item.Size.Bytes is long bytes ? BackupChangeSummary.Size(bytes) : "无法检测";
-                if (item.Size.Bytes > SaveSizeWarningBytes) label += "（超过 10 MB）";
-                row.Children.Add(Heading($"{item.Game} · {label}", "BodyStrongTextBlockStyle"));
-                row.Children.Add(Note(item.Path ?? "未找到本机路径。"));
-                if (item.Size.Error != null) row.Children.Add(Note(item.Size.Error));
+                StatusTone tone = item.Size.Bytes switch
+                {
+                    null => StatusTone.Neutral,
+                    > SaveSizeWarningBytes => StatusTone.Warning,
+                    _ => StatusTone.Success
+                };
+                var heading = new Grid { ColumnSpacing = 8 };
+                heading.ColumnDefinitions.Add(new ColumnDefinition());
+                heading.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                var name = Heading(item.Game, "BodyStrongTextBlockStyle");
+                var badge = StatusBadge(label, tone);
+                name.VerticalAlignment = badge.VerticalAlignment = VerticalAlignment.Center;
+                heading.Children.Add(name);
+                Grid.SetColumn(badge, 1);
+                heading.Children.Add(badge);
+                row.Children.Add(heading);
+                row.Children.Add(item.Path is string path ? PathText(path) : SecondaryText("未找到本机路径。"));
+                if (item.Size.Error != null) row.Children.Add(SecondaryText(item.Size.Error));
                 body.Children.Add(row);
             }
         }

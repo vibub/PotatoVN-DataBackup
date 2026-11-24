@@ -103,8 +103,21 @@ public sealed partial class SmokeApp
             "存档大小按钮应位于刷新游戏列表的右侧。");
         InvokeButton(checkSizes);
         ContentDialog report = await WaitDialogAsync(view, "存档大小检测");
-        Check(FindAll<TextBlock>(report).Any(text => text.Text.Contains($"{game.Name} · 10 MB（超过 10 MB）")) &&
-            FindAll<TextBlock>(report).Any(text => text.Text == largeFolder), "主动检测应显示实际目录及超限大小。");
+        Border[] sizeBadges = FindAll<Border>(report).Where(border => border.Child is TextBlock &&
+            !string.IsNullOrEmpty(AutomationProperties.GetName(border))).ToArray();
+        Border largeBadge = sizeBadges.Single(badge => AutomationProperties.GetName(badge) == "10 MB");
+        Border smallBadge = sizeBadges.Single(badge => AutomationProperties.GetName(badge).EndsWith(" B", StringComparison.Ordinal));
+        Check(FindAll<TextBlock>(report).Any(text => text.Text == game.Name) &&
+            FindAll<TextBlock>(report).Any(text => Equals(ToolTipService.GetToolTip(text), largeFolder) && text.FontSize == 12) &&
+            !FindAll<TextBlock>(report).Any(text => text.Text.Contains("（超过 10 MB）")), "检测结果应分开显示游戏名、大小标签和带工具提示的路径。");
+        if (!new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast)
+        {
+            bool dark = report.ActualTheme == ElementTheme.Dark;
+            Check(((SolidColorBrush)largeBadge.Background).Color == (dark ? Windows.UI.Color.FromArgb(255, 73, 54, 21) : Windows.UI.Color.FromArgb(255, 255, 241, 206)) &&
+                ((SolidColorBrush)smallBadge.Background).Color == (dark ? Windows.UI.Color.FromArgb(255, 23, 57, 42) : Windows.UI.Color.FromArgb(255, 231, 244, 236)),
+                "超过 10 MB 的标签应为黄色，其余大小标签应为绿色。");
+        }
+        await CaptureAsync(report, "save-size-report.png");
         report.Hide();
         await WaitIdleAsync(view);
         Check(controller.SaveCalls == savesBeforeLarge + 1, "主动检测只读取存档位置。");
@@ -113,7 +126,7 @@ public sealed partial class SmokeApp
         InvokePrimary(await WaitDialogAsync(view, "移除存档位置"));
         await WaitIdleAsync(view);
         page.ChangeView(null, 0, null, true);
-        results.Add("PASS save-location-menu: navigation, cancel/add/remove, nested folder size warning, return/confirm, and read-only size check");
+        results.Add("PASS save-location-menu: navigation, cancel/add/remove, nested folder size warning, return/confirm, and green/yellow size badges");
     }
 
     private async Task CheckPresentationAsync(BackupSettingsView view, DemoController controller, Grid host, Pivot navigation, List<string> results)
