@@ -73,7 +73,7 @@ public sealed partial class BackupSettingsView
         }, successMessage: "已删除本机渠道配置，云端备份保留。" );
         var form = Stack(12);
         form.Children.Add(SectionHeading("连接信息"));
-        AddChoice(_providerKind, ProviderKind.WebDav, "WebDAV（坚果云、NAS 等）");
+        AddChoice(_providerKind, ProviderKind.WebDav, ProviderLabel(ProviderKind.WebDav));
         AddChoice(_providerKind, ProviderKind.OneDrive, "OneDrive（微软云盘）");
         AddChoice(_providerKind, ProviderKind.GoogleDrive, "Google Drive（谷歌云盘）");
         form.Children.Add(_providerKind);
