@@ -237,7 +237,7 @@ public sealed partial class BackupSettingsView : UserControl
         ToolTipService.SetToolTip(_activeChannel, _activeChannel.Text);
         _lastSuccessfulBackup.Text = _controller.Settings.LastSuccessfulBackupUtc is { } time
             ? $"最近成功备份：{time.ToLocalTime():yyyy-MM-dd HH:mm:ss}" : "尚未完成备份。";
-        _saveState.Visibility = (_settingsDirty || _profileDirty) ? Visibility.Visible : Visibility.Collapsed;
+        _saveState.Visibility = (_settingsDirty || HasProfileChanges) ? Visibility.Visible : Visibility.Collapsed;
         UpdateFeedbackVisibility();
     }
 

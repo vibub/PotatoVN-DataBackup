@@ -132,9 +132,9 @@ public sealed partial class SmokeApp : Application
                     File.WriteAllLines(Path.Combine(Program.Output, "result.txt"), results);
                     return;
                 }
-                CheckProviderGuideLinks(controller, results);
                 await CheckFeedbackScopeAsync(view, controller, navigation, results);
                 await CheckFeedbackExpiryAsync(view, results);
+                await CheckProviderGuideLinksAsync(view, controller, results);
                 await CheckBackupTaskAsync(view, controller, results);
                 foreach (var size in new[] { (Width: 1440, Height: 900), (Width: 1080, Height: 760), (Width: 760, Height: 620), (Width: 620, Height: 540) })
                 {
@@ -496,9 +496,8 @@ public sealed partial class SmokeApp : Application
         results.Add("PASS automation-inputs: timer and exit delay independently follow switches");
     }
 
-    private static void CheckProviderGuideLinks(DemoController controller, List<string> results)
+    private static async Task CheckProviderGuideLinksAsync(BackupSettingsView view, DemoController controller, List<string> results)
     {
-        var view = new BackupSettingsView(controller);
         ComboBox providers = Field<ComboBox>(view, "_providerKind");
         StackPanel oneDrive = Field<StackPanel>(view, "_oauthFields");
         StackPanel google = Field<StackPanel>(view, "_googleFields");
@@ -510,20 +509,46 @@ public sealed partial class SmokeApp : Application
             (ProviderKind.GoogleDrive, google, "google-drive")
         })
         {
+            providers.IsDropDownOpen = true;
+            await Task.Delay(80);
             providers.SelectedItem = providers.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, kind));
+            providers.IsDropDownOpen = false;
+            await Task.Delay(120);
             Check(fields.Visibility == Visibility.Visible &&
                 (fields == oneDrive ? google : oneDrive).Visibility == Visibility.Collapsed &&
-                fields.Children[0] is TextBlock { TextWrapping: TextWrapping.Wrap } note &&
-                note.Inlines.Last() is Microsoft.UI.Xaml.Documents.Hyperlink link &&
-                link.Inlines.Single() is Microsoft.UI.Xaml.Documents.Run { Text: "配置教程" } &&
+                fields.Children[0] is StackPanel note &&
+                note.Children[0] is TextBlock { TextWrapping: TextWrapping.Wrap } &&
+                note.Children[1] is HyperlinkButton { Content: "配置教程" } link &&
+                link.IsLoaded && link.ActualHeight > 0 &&
                 link.NavigateUri.AbsoluteUri == $"{guideUrl}#{section}",
-                $"{kind} 的说明行末尾应显示指向对应教程小节的链接。");
+                $"{kind} 应在实际加载的表单中显示对应教程按钮。");
         }
 
         providers.SelectedItem = providers.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, ProviderKind.WebDav));
+        await Task.Delay(120);
         Check(oneDrive.Visibility == Visibility.Collapsed && google.Visibility == Visibility.Collapsed,
             "WebDAV 表单应隐藏两种 OAuth 渠道的教程链接。");
-        results.Add("PASS provider-guide-links: each OAuth provider shows its own inline guide; WebDAV hides both");
+        Check(Field<TextBlock>(view, "_saveState").Visibility == Visibility.Collapsed, "切回已保存的 WebDAV 类型后，表单内容未改变。");
+        results.Add("PASS provider-guide-links: loaded dropdown switches display the correct guide; reverting the provider keeps the form clean");
+
+        ComboBox profiles = Field<ComboBox>(view, "_profilePick");
+        TextBlock saveState = Field<TextBlock>(view, "_saveState");
+        PasswordBox password = Field<PasswordBox>(view, "_password");
+        foreach (int index in new[] { 2, 0, 3, 0 })
+        {
+            profiles.SelectedIndex = index;
+            await Task.Delay(120);
+            Check(controller.Settings.ActiveProfileId == controller.Settings.Profiles[index].Id &&
+                saveState.Visibility == Visibility.Collapsed && password.Password.Length == 0,
+                "切换已保存渠道时，不提示修改，也不回填旧 WebDAV 密码。");
+        }
+        password.Password = "synthetic-new-password";
+        await Task.Delay(80);
+        Check(saveState.Visibility == Visibility.Visible, "输入新 WebDAV 密码后应提示未保存。");
+        password.Password = "";
+        await Task.Delay(80);
+        Check(saveState.Visibility == Visibility.Collapsed, "清空新输入的密码后应恢复未修改状态。");
+        results.Add("PASS saved-provider-switching: WebDAV and OAuth profiles switch cleanly; typing and clearing a replacement password updates the form state");
     }
 
     private static async Task CheckProfileSwitchingAsync(BackupSettingsView view, DemoController controller, List<string> results)
@@ -560,7 +585,7 @@ public sealed partial class SmokeApp : Application
         Check(typeof(BackupSettingsView).GetField("_remotePath", BindingFlags.Instance | BindingFlags.NonPublic) == null,
             "云端目录不应再作为独立配置输入。");
         Check(Field<Button>(view, "_authorizeChannel").Visibility == Visibility.Collapsed, "WebDAV 不应显示浏览器授权按钮。");
-        results.Add("PASS profile-switching: active channel follows selection; cancel/discard/save preserve their intended edits; no directory input or WebDAV OAuth action");
+        results.Add("PASS profile-switching: cancel, discard, and save preserve their intended channel edits");
     }
 
     private static async Task CheckSettingsCommitAsync(BackupSettingsView view, DemoController controller, List<string> results)
@@ -857,6 +882,8 @@ internal sealed class DemoController : IBackupUiController
         ProviderProfile profile = new() { Name = "演示 WebDAV", Endpoint = "https://example.invalid/dav/", Kind = ProviderKind.WebDav };
         Settings.Profiles.Add(profile); Settings.ActiveProfileId = profile.Id;
         Settings.Profiles.Add(new ProviderProfile { Name = "第二云盘（演示）", Endpoint = "https://second.invalid/dav/", Kind = ProviderKind.WebDav });
+        Settings.Profiles.Add(new ProviderProfile { Name = "演示 OneDrive", Kind = ProviderKind.OneDrive, ClientId = "synthetic-onedrive" });
+        Settings.Profiles.Add(new ProviderProfile { Name = "演示 Google Drive", Kind = ProviderKind.GoogleDrive, ClientId = "synthetic-google" });
         var now = DateTimeOffset.UtcNow;
         var current = new PendingBackupVersion("snapshots/current", now, "演示设备");
         var older = new PendingBackupVersion("snapshots/older", now.AddHours(-1), "演示设备");

@@ -305,7 +305,7 @@ public sealed partial class BackupSettingsView
             if (_specificGames.IsChecked == true && !_scopeGames.Any(game => IncludesGameCategory(game) && _selectedGameIds.Contains(game.Id)))
                 throw new InvalidOperationException("请到“备份内容”勾选当前范围内的游戏，或取消“仅备份指定游戏”。");
         }
-        if ((_timer.IsOn || _onExit.IsOn) && _controller.Settings.ActiveProfileId == null && !_profileDirty)
+        if ((_timer.IsOn || _onExit.IsOn) && _controller.Settings.ActiveProfileId == null && !HasProfileChanges)
             throw new InvalidOperationException("请先到“连接云盘”填写连接信息并测试连接，再开启自动备份。");
         BackupSettings settings = _controller.Settings;
         var previous = (settings.Content, settings.AutomaticContent, settings.AllGames, settings.IncludeLocalGames, settings.IncludeNonLocalGames, settings.SelectedGameIds, settings.TimerEnabled,
@@ -326,7 +326,7 @@ public sealed partial class BackupSettingsView
         _controller.Settings.DeviceName = string.IsNullOrWhiteSpace(_deviceName.Text) ? Environment.MachineName : _deviceName.Text.Trim();
         try
         {
-            if (_editingProfile != null && (_profileDirty || settings.Profiles.Contains(_editingProfile))) await SaveProfileFieldsAsync();
+            if (_editingProfile != null && (HasProfileChanges || settings.Profiles.Contains(_editingProfile))) await SaveProfileFieldsAsync();
             else await _controller.SaveSettingsAsync();
             MarkSettingsSaved();
         }

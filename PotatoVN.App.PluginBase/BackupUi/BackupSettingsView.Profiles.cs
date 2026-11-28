@@ -4,7 +4,6 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Documents;
 using PotatoVN.Backup.Core;
 
 namespace PotatoVN.App.PluginBase.BackupUi;
@@ -35,7 +34,14 @@ public sealed partial class BackupSettingsView
     private Button _testChannel = null!;
     private Button _deleteChannel = null!;
     private ProviderProfile? _editingProfile;
-    private bool _profileDirty;
+    private (ProviderKind Kind, string Name, string Endpoint, string Username, string ClientId, string Tenant) _loadedProfileFields;
+
+    private ProviderKind SelectedProviderKind =>
+        Choice(_providerKind) is ProviderKind kind ? kind : ProviderKind.WebDav;
+
+    private bool HasProfileChanges => _editingProfile != null &&
+        (ReadProfileFields() != _loadedProfileFields || _password.Password.Length != 0 ||
+            !string.IsNullOrWhiteSpace(_googleJson.Text));
 
     private StackPanel BuildProfilesTab()
     {
@@ -149,28 +155,35 @@ public sealed partial class BackupSettingsView
         return panel;
     }
 
-    private static TextBlock ProviderSetupNote(string text, string section)
+    private static StackPanel ProviderSetupNote(string text, string section)
     {
-        var note = Note("");
-        note.Inlines.Add(new Run { Text = text + " " });
-
-        var link = new Hyperlink { NavigateUri = new Uri($"{CloudProviderGuideUrl}#{section}") };
-        link.Inlines.Add(new Run { Text = "配置教程" });
-        note.Inlines.Add(link);
-
+        var note = Stack(4);
+        note.Children.Add(Note(text));
+        note.Children.Add(new HyperlinkButton
+        {
+            Content = "配置教程",
+            NavigateUri = new Uri($"{CloudProviderGuideUrl}#{section}"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Padding = new Thickness(0)
+        });
         return note;
+    }
+
+    private (ProviderKind Kind, string Name, string Endpoint, string Username, string ClientId, string Tenant) ReadProfileFields()
+    {
+        string tenant = _tenant.Text.Trim();
+        return (SelectedProviderKind, _profileName.Text.Trim(), _endpoint.Text.Trim(), _username.Text.Trim(),
+            _clientId.Text.Trim(), tenant.Length == 0 ? "common" : tenant);
     }
 
     private void ProfileFieldChanged()
     {
-        if (_loading) return;
-        _profileDirty = true;
-        RefreshStatus();
+        if (!_loading) RefreshStatus();
     }
 
     private async Task<bool> ConfirmLeavingProfileAsync()
     {
-        if (!_profileDirty) return true;
+        if (!HasProfileChanges) return true;
         var dialog = NewDialog("渠道信息尚未保存", Note("保存当前填写的连接信息后继续？选择放弃只会丢弃本次编辑。"), "保存并继续", "继续编辑");
         dialog.SecondaryButtonText = "放弃更改";
         ContentDialogResult result = await dialog.ShowAsync();
@@ -218,7 +231,7 @@ public sealed partial class BackupSettingsView
         _password.Password = "";
         _password.PlaceholderText = saved ? "留空沿用已保存密码；输入新密码可替换" : "填写服务商提供的密码";
         _googleJson.Text = "";
-        _profileDirty = false;
+        _loadedProfileFields = ReadProfileFields();
         _loading = false;
         _deleteChannel.Visibility = saved ? Visibility.Visible : Visibility.Collapsed;
         _repositoryNote.Text = profile?.RepositoryFolder == "PotatoVN_Data" && string.IsNullOrEmpty(profile.RemotePath)
@@ -232,7 +245,7 @@ public sealed partial class BackupSettingsView
 
     private void UpdateProviderFields()
     {
-        ProviderKind kind = Choice(_providerKind) is ProviderKind value ? value : ProviderKind.WebDav;
+        ProviderKind kind = SelectedProviderKind;
         if (_webDavFields == null) return;
         _webDavFields.Visibility = kind == ProviderKind.WebDav ? Visibility.Visible : Visibility.Collapsed;
         _oauthFields.Visibility = kind == ProviderKind.OneDrive ? Visibility.Visible : Visibility.Collapsed;
@@ -247,10 +260,12 @@ public sealed partial class BackupSettingsView
     private async Task SaveProfileFieldsAsync()
     {
         ProviderProfile profile = RequireProfile();
-        ProviderKind kind = Choice(_providerKind) is ProviderKind picked ? picked : ProviderKind.WebDav;
-        string clientId = _clientId.Text.Trim();
+        var fields = ReadProfileFields();
+        ProviderKind kind = fields.Kind;
+        bool changedChannel = HasProfileChanges || _controller.Settings.ActiveProfileId != profile.Id;
+        string clientId = fields.ClientId;
         string? clientSecret = null;
-        if (kind == ProviderKind.WebDav && (!Uri.TryCreate(_endpoint.Text.Trim(), UriKind.Absolute, out Uri? endpoint) ||
+        if (kind == ProviderKind.WebDav && (!Uri.TryCreate(fields.Endpoint, UriKind.Absolute, out Uri? endpoint) ||
             (endpoint.Scheme != Uri.UriSchemeHttps && endpoint.Scheme != Uri.UriSchemeHttp) ||
             !string.IsNullOrEmpty(endpoint.UserInfo) || !string.IsNullOrEmpty(endpoint.Query) || !string.IsNullOrEmpty(endpoint.Fragment)))
             throw new InvalidOperationException("请填写服务商提供的 HTTP(S) WebDAV 地址；账号和密码请填在各自的输入框中。");
@@ -273,16 +288,15 @@ public sealed partial class BackupSettingsView
             throw new InvalidOperationException("切换到 Google Drive 时，请粘贴对应的桌面应用 JSON 配置。");
         if (kind != ProviderKind.WebDav && string.IsNullOrWhiteSpace(clientId))
             throw new InvalidOperationException(kind == ProviderKind.GoogleDrive ? "请先粘贴 Google Cloud 的桌面应用 JSON 配置。" : "请先填写 Microsoft Entra 的应用程序（客户端）ID。");
-        profile.Name = string.IsNullOrWhiteSpace(_profileName.Text) ? ProviderLabel(kind) : _profileName.Text.Trim();
+        profile.Name = fields.Name.Length == 0 ? ProviderLabel(kind) : fields.Name;
         profile.Kind = kind;
-        profile.Endpoint = _endpoint.Text.Trim();
-        profile.Username = _username.Text.Trim();
+        profile.Endpoint = fields.Endpoint;
+        profile.Username = fields.Username;
         profile.ClientId = clientId;
-        profile.Tenant = string.IsNullOrWhiteSpace(_tenant.Text) ? "common" : _tenant.Text.Trim();
+        profile.Tenant = fields.Tenant;
         if (!_controller.Settings.Profiles.Contains(profile)) _controller.Settings.Profiles.Add(profile);
         if (!string.IsNullOrEmpty(_password.Password)) await _controller.SetSecretAsync(profile.Id, "password", _password.Password);
         if (clientSecret != null) await _controller.SetSecretAsync(profile.Id, "client-secret", clientSecret);
-        bool changedChannel = _profileDirty || _controller.Settings.ActiveProfileId != profile.Id;
         _controller.Settings.ActiveProfileId = profile.Id;
         await _controller.SaveSettingsAsync();
         if (changedChannel) ClearChannelHistory();
