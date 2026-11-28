@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using PotatoVN.Backup.Core;
@@ -126,33 +127,75 @@ public sealed partial class BackupSettingsView
         maintenance.Children.Add(_deleteChannel);
         advanced.Children.Add(maintenance);
         panel.Children.Add(new Expander { Header = "更多选项", Content = advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
-        _profilePick.SelectionChanged += async (_, _) =>
+        _profilePick.SelectionChanged += (_, _) =>
         {
-            if (_loading || Choice(_profilePick) is not Guid id || id == _editingProfile?.Id) return;
-            Guid? old = _editingProfile?.Id;
-            _loading = true;
-            SelectChoice(_profilePick, old);
-            _loading = false;
-            await RunAsync(async _ =>
-            {
-                if (!await ConfirmLeavingProfileAsync()) return;
-                ProviderProfile? selected = _controller.Settings.Profiles.FirstOrDefault(p => p.Id == id);
-                if (selected == null) return;
-                Guid? previousActive = _controller.Settings.ActiveProfileId;
-                _controller.Settings.ActiveProfileId = selected.Id;
-                try { await _controller.SaveSettingsAsync(); }
-                catch { _controller.Settings.ActiveProfileId = previousActive; throw; }
-                _editingProfile = selected;
-                ClearChannelHistory();
-                RefreshProfiles(selected.Id);
-            }, false);
+            if (!_loading) RunAfterDropDown(_profilePick, async () => await SwitchProfileAsync());
         };
-        _providerKind.SelectionChanged += (_, _) => { UpdateProviderFields(); ProfileFieldChanged(); };
+        _providerKind.SelectionChanged += (_, _) =>
+        {
+            if (_loading) return;
+            RunAfterDropDown(_providerKind, () =>
+            {
+                UpdateProviderFields();
+                ProfileFieldChanged();
+            });
+        };
         foreach (TextBox input in new[] { _profileName, _endpoint, _username, _clientId, _tenant, _googleJson })
             input.TextChanged += (_, _) => ProfileFieldChanged();
         _password.PasswordChanged += (_, _) => ProfileFieldChanged();
         RefreshProfiles(_controller.Settings.ActiveProfileId);
         return panel;
+    }
+
+    private void RunAfterDropDown(ComboBox selector, DispatcherQueueHandler action)
+    {
+        // Selection can change while WinUI is still closing the native popup.
+        _uiDispatcher.TryEnqueue(() =>
+        {
+            if (!selector.IsDropDownOpen)
+            {
+                action();
+                return;
+            }
+
+            selector.DropDownClosed += OnDropDownClosed;
+            void OnDropDownClosed(object? sender, object args)
+            {
+                selector.DropDownClosed -= OnDropDownClosed;
+                _uiDispatcher.TryEnqueue(action);
+            }
+        });
+    }
+
+    private async Task SwitchProfileAsync()
+    {
+        if (_loading || Choice(_profilePick) is not Guid id || id == _editingProfile?.Id) return;
+        ProviderProfile? previous = _editingProfile;
+        await RunAsync(async _ =>
+        {
+            if (!await ConfirmLeavingProfileAsync()) return;
+            ProviderProfile? selected = _controller.Settings.Profiles.FirstOrDefault(p => p.Id == id);
+            if (selected == null) return;
+            Guid? previousActive = _controller.Settings.ActiveProfileId;
+            _controller.Settings.ActiveProfileId = selected.Id;
+            try { await _controller.SaveSettingsAsync(); }
+            catch { _controller.Settings.ActiveProfileId = previousActive; throw; }
+            ClearChannelHistory();
+            LoadProfile(selected);
+            if (previous != null && !_controller.Settings.Profiles.Contains(previous) &&
+                _profilePick.Items.OfType<ComboBoxItem>().FirstOrDefault(item => Equals(item.Tag, previous.Id)) is { } draft)
+            {
+                _profilePick.Items.Remove(draft);
+                _profilePick.Visibility = _profilePick.Items.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }, false);
+
+        // The existing items are still valid. Restore selection only after a canceled or redirected switch.
+        Guid? editingId = _editingProfile?.Id;
+        if (Equals(Choice(_profilePick), editingId)) return;
+        _loading = true;
+        SelectChoice(_profilePick, editingId);
+        _loading = false;
     }
 
     private static StackPanel ProviderSetupNote(string text, string section)

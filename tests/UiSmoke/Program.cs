@@ -132,6 +132,14 @@ public sealed partial class SmokeApp : Application
                     File.WriteAllLines(Path.Combine(Program.Output, "result.txt"), results);
                     return;
                 }
+                if (Environment.GetEnvironmentVariable("POTATOVN_UI_SMOKE_PROFILES_ONLY") == "1")
+                {
+                    await CheckProviderGuideLinksAsync(view, controller, results);
+                    await CheckProfileSwitchingAsync(view, controller, results);
+                    await CheckFirstRunSettingsAsync(hostPanel, view, results);
+                    File.WriteAllLines(Path.Combine(Program.Output, "result.txt"), results);
+                    return;
+                }
                 await CheckFeedbackScopeAsync(view, controller, navigation, results);
                 await CheckFeedbackExpiryAsync(view, results);
                 await CheckProviderGuideLinksAsync(view, controller, results);
@@ -512,9 +520,10 @@ public sealed partial class SmokeApp : Application
             providers.IsDropDownOpen = true;
             await Task.Delay(80);
             providers.SelectedItem = providers.Items.OfType<ComboBoxItem>().Single(item => Equals(item.Tag, kind));
+            Check(fields.Visibility == Visibility.Collapsed, "选择下拉项的回调内不应切换表单。");
             providers.IsDropDownOpen = false;
             await Task.Delay(120);
-            Check(fields.Visibility == Visibility.Visible &&
+            await WaitForUiAsync(() => fields.Visibility == Visibility.Visible &&
                 (fields == oneDrive ? google : oneDrive).Visibility == Visibility.Collapsed &&
                 fields.Children[0] is StackPanel note &&
                 note.Children[0] is TextBlock { TextWrapping: TextWrapping.Wrap } &&
@@ -532,22 +541,33 @@ public sealed partial class SmokeApp : Application
         results.Add("PASS provider-guide-links: loaded dropdown switches display the correct guide; reverting the provider keeps the form clean");
 
         ComboBox profiles = Field<ComboBox>(view, "_profilePick");
+        ComboBoxItem[] savedItems = profiles.Items.OfType<ComboBoxItem>().ToArray();
+        StackPanel webDav = Field<StackPanel>(view, "_webDavFields");
         TextBlock saveState = Field<TextBlock>(view, "_saveState");
         PasswordBox password = Field<PasswordBox>(view, "_password");
         foreach (int index in new[] { 2, 0, 3, 0 })
         {
+            Guid? activeBeforeChoice = controller.Settings.ActiveProfileId;
+            ProviderProfile selected = controller.Settings.Profiles[index];
+            profiles.IsDropDownOpen = true;
+            await Task.Delay(80);
             profiles.SelectedIndex = index;
+            Check(controller.Settings.ActiveProfileId == activeBeforeChoice,
+                "选择下拉项的回调内不应切换已保存渠道。");
+            profiles.IsDropDownOpen = false;
             await Task.Delay(120);
-            Check(controller.Settings.ActiveProfileId == controller.Settings.Profiles[index].Id &&
+            await WaitForUiAsync(() => controller.Settings.ActiveProfileId == selected.Id && profiles.IsEnabled &&
+                providers.SelectedItem is ComboBoxItem provider && Equals(provider.Tag, selected.Kind) &&
                 saveState.Visibility == Visibility.Collapsed && password.Password.Length == 0,
                 "切换已保存渠道时，不提示修改，也不回填旧 WebDAV 密码。");
+            Check(profiles.Items.OfType<ComboBoxItem>().SequenceEqual(savedItems), "切换已保存渠道时应保留原来的下拉项。");
         }
+        await WaitForUiAsync(() => webDav.Visibility == Visibility.Visible && password.IsLoaded &&
+            password.IsEnabled && password.ActualHeight > 0, "WebDAV 密码框应已加载并可编辑。");
         password.Password = "synthetic-new-password";
-        await Task.Delay(80);
-        Check(saveState.Visibility == Visibility.Visible, "输入新 WebDAV 密码后应提示未保存。");
+        await WaitForUiAsync(() => saveState.Visibility == Visibility.Visible, "输入新 WebDAV 密码后应提示未保存。");
         password.Password = "";
-        await Task.Delay(80);
-        Check(saveState.Visibility == Visibility.Collapsed, "清空新输入的密码后应恢复未修改状态。");
+        await WaitForUiAsync(() => saveState.Visibility == Visibility.Collapsed, "清空新输入的密码后应恢复未修改状态。");
         results.Add("PASS saved-provider-switching: WebDAV and OAuth profiles switch cleanly; typing and clearing a replacement password updates the form state");
     }
 
@@ -585,7 +605,15 @@ public sealed partial class SmokeApp : Application
         Check(typeof(BackupSettingsView).GetField("_remotePath", BindingFlags.Instance | BindingFlags.NonPublic) == null,
             "云端目录不应再作为独立配置输入。");
         Check(Field<Button>(view, "_authorizeChannel").Visibility == Visibility.Collapsed, "WebDAV 不应显示浏览器授权按钮。");
-        results.Add("PASS profile-switching: cancel, discard, and save preserve their intended channel edits");
+        int savedCount = profiles.Items.Count;
+        InvokeButton(FindButton(view, "添加渠道"));
+        await WaitForUiAsync(() => profiles.IsEnabled && profiles.Items.Count == savedCount + 1,
+            "添加渠道应显示未保存的草稿。");
+        ComboBoxItem[] savedItems = profiles.Items.OfType<ComboBoxItem>().Take(savedCount).ToArray();
+        profiles.SelectedItem = savedItems[1];
+        await WaitForUiAsync(() => controller.Settings.ActiveProfileId == secondId &&
+            profiles.Items.OfType<ComboBoxItem>().SequenceEqual(savedItems), "离开空白草稿时应只移除草稿项。");
+        results.Add("PASS profile-switching: cancel, discard, save, and leaving a blank draft preserve the intended channel state");
     }
 
     private static async Task CheckSettingsCommitAsync(BackupSettingsView view, DemoController controller, List<string> results)

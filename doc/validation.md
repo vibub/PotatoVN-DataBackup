@@ -16,6 +16,11 @@
 - OneDrive 和 Google Drive 的配置教程改用独立的 `HyperlinkButton`，在已加载的表单中检查显示与链接目标。已安装宿主曾报 `COMException (0x80070490)`，原版的隔离切换未复现这条异常，新版仍待实际安装后复测。
 - 插件 x64 Release 编译通过，隔离 UiSmoke 70 项通过。
 
+## 已保存渠道下拉框闪退复查（2026-11-28）
+
+- 在隔离 WinUI 中打开已保存渠道的下拉框，选中 OneDrive 并关闭，可复现与实际宿主相同的 `COMException (0x80070490)`。切换逻辑延后到下拉框关闭，并直接加载已保存的表单。切换已保存渠道时保留原下拉项。
+- Debug 和 x64 Release 编译通过。`POTATOVN_UI_SMOKE_PROFILES_ONLY=1` 的四项回归通过，覆盖两种 OAuth 渠道、WebDAV 密码、放弃与保存编辑、退出草稿及首次配置。整套 UiSmoke 在其它布局检查处中止，新 Debug DLL 在实际宿主中的切换仍待复测。
+
 ## OAuth 渠道配置教程链接（2026-11-21）
 
 - 插件 x64 Release 编译通过。已核对 GitHub 仓库的 OneDrive 与 Google Drive 教程小节。
