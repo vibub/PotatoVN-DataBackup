@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="doc/icon-256.png" width="96" height="96" alt="PotatoVN 云备份插件图标" />
+</p>
+
 # PotatoVN 自定义云备份
 
 将 PotatoVN 游戏资料和存档备份到自己的 **WebDAV、OneDrive 或 Google Drive**。插件直接连接云端，不需要网盘同步客户端，不使用官方服务器的 100 MB 对象存储额度。
