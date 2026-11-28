@@ -54,20 +54,28 @@ HTTP 503 表示服务暂不可用，也可能与服务商的频率限制有关�
 
 ## Google Drive
 
-1. 在 [Google Cloud 控制台](https://console.cloud.google.com/) 创建或选择自己的项目，并启用 Google Drive API。
-2. 配置 OAuth 同意屏幕。自用测试时，将自己的 Google 账号加入测试用户。
-3. 创建 **Desktop app／桌面应用** 类型的 OAuth 客户端，并下载客户端 JSON 配置。
-4. 在插件粘贴完整 JSON，保存或登录时自动导入，无需再点导入按钮。桌面应用属于公共客户端，这个客户端密码不等于 Google 账号密码。
-5. 点击“登录云盘并测试”，在系统浏览器授权。插件仅请求 `https://www.googleapis.com/auth/drive.file`，用于管理由本应用创建的备份文件。
-6. 授权后自动检查连接。插件在“我的云端硬盘”下自动创建 `PotatoVN_Data`，不会使用已有文件夹的名称来推断用户对整盘的授权。
+用你准备存放备份的 Google 账号创建**个人模式（Personal mode）**应用。这个模式只允许创建应用的账号授权，适合个人自动备份。 [Google 个人模式说明](https://support.google.com/cloud/answer/15544987#quick_setup_for_personal_use)
 
-新设备应使用同一 Google 账号和同一 OAuth 客户端配置。`drive.file` 的可见范围与应用授权有关。
+### 1. 创建桌面应用并下载 JSON
 
-Google 将外部应用保持在 **Testing／测试** 发布状态时，Drive 授权的刷新令牌通常会在 7 天后失效。长期自动备份应按 Google 控制台要求调整应用发布配置；令牌被撤销或失效时，插件会提示重新登录，后台任务不会自行弹出登录浏览器。
+1. 用目标 Google 账号打开个人模式设置页。选择已有的个人模式项目，或选择创建新项目。 [打开个人模式设置](https://console.cloud.google.com/auth/overview/personal)
+2. 「应用类型（Application type）」选 **桌面应用（Desktop app）**。阅读并同意条款后，点「继续（Continue）」。
+3. 在创建成功的弹窗里立即点「下载 JSON（Download JSON）」。保存好这个文件，它包含客户端密钥，换设备时也会用到。 [Google 客户端密钥说明](https://support.google.com/cloud/answer/15549257)
 
-如果 Google Drive 返回同名目录／文件冲突，插件会停止操作，避免擅自选择另一份仓库。请在云盘中检查重复项目并保留正确的备份目录，再重试；插件不会自动搬移旧备份。
+### 2. 在同一个项目启用 Google Drive API
 
-参考：[桌面应用 OAuth](https://developers.google.com/identity/protocols/oauth2/native-app)、[Drive 权限范围](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)、[刷新令牌有效期](https://developers.google.com/identity/protocols/oauth2#expiration)。
+1. 打开 Google Drive API 页面，在控制台顶部确认当前项目就是刚才创建桌面应用的项目。 [打开 Google Drive API](https://console.cloud.google.com/apis/library/drive.googleapis.com)
+2. 点「启用（Enable）」。如果页面显示「管理（Manage）」，说明该项目已经启用。
+
+### 3. 回到 PotatoVN 登录
+
+1. 打开插件的「连接云盘」，选择「Google Drive（谷歌云盘）」。
+2. 用记事本打开下载的 JSON 文件，将**整个文件的内容**复制到「Google 桌面应用配置 JSON」框。插件会从文件中的 `installed` 配置读取客户端 ID 和密钥。
+3. 点「登录云盘并测试」。在浏览器里选择第 1 步创建应用的同一个 Google 账号，确认 Google Drive 授权后返回插件。看到「登录成功，连接测试通过。」就可以开始备份。
+
+插件用 `drive.file` 权限访问它创建的备份文件，默认在「我的云端硬盘」下建立 `PotatoVN_Data`。换设备时，复用同一个 Google 账号和同一份 OAuth 客户端配置，才能访问原来的备份。 [Google Drive 权限说明](https://developers.google.com/workspace/drive/api/guides/api-specific-auth?hl=zh-cn)
+
+如果 Google Drive 返回同名目录或文件冲突，请在云盘中确认哪一份是正确的备份，再处理重复项并重试。插件会在遇到冲突时停止操作。
 
 ## 凭据与传输
 
