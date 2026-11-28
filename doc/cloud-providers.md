@@ -29,12 +29,22 @@ HTTP 503 表示服务暂不可用，也可能与服务商的频率限制有关�
 
 ## OneDrive
 
-1. 在 [Microsoft Entra 管理中心](https://entra.microsoft.com/) 注册一个应用。
-2. 根据自己的账号选择支持的账号类型。需要个人微软账号时，应包含“个人 Microsoft 账户”；同时使用工作／学校账号时选择相应多租户账号类型。
-3. 在身份验证中添加“移动和桌面应用”平台，配置重定向 URI：`http://localhost`。插件会使用临时端口，这是微软对桌面客户端支持的方式。
-4. 添加 Microsoft Graph **委托权限** `Files.ReadWrite.AppFolder`。插件只访问该应用专用目录，不需要整盘读写权限。
-5. 将“应用程序（客户端）ID”填写到插件。“更多选项”中的微软登录目录默认为 `common`；只使用个人账号可填 `consumers`，组织环境可填写自己的租户 ID。
-6. 点击“登录云盘并测试”，在系统浏览器完成授权，随后自动检查连接。
+### 准备 Entra 目录
+
+注册应用需要一个 Microsoft Entra 目录，以及在该目录中注册应用的权限。可以使用已有权限的工作或学校账号来注册应用，之后再用自己的个人 Microsoft 帐户授权 OneDrive。
+
+如果你只有个人 Microsoft 帐户，且没有可管理的 Entra 目录，请用该账号开通 Azure 免费账户。开通后，微软会为该账户创建一个 Entra 目录。普通 Azure 免费账户注册需要验证手机号和银行卡。 [Azure 免费账户入口和注册要求](https://azure.microsoft.com/en-us/pricing/purchase-options/azure-account)
+
+如果进入管理中心时提示“所选的用户帐户在租户 ‘Microsoft Services’ 中不存在”（`AADSTS50020`），请先按上面的方式取得目录访问权限。已有目录时，登录后用右上角的目录切换器选择有权限的目录。 [微软对该错误的说明](https://learn.microsoft.com/zh-cn/troubleshoot/entra/entra-id/app-integration/error-code-aadsts50020-user-account-identity-provider-does-not-exist)
+
+### 注册应用并连接 OneDrive
+
+1. 登录后，进入「Entra ID → 应用注册 → 新注册」。 [Microsoft Entra 管理中心](https://entra.microsoft.com/)
+2. 按准备授权 OneDrive 的账号选择「受支持的帐户类型」。只用个人 OneDrive 时选「仅个人 Microsoft 帐户」。同时支持个人和工作或学校账号时，选「任何组织目录中的帐户和个人 Microsoft 帐户」。只用组织账号时，按需要选择单租户或多租户。
+3. 在「身份验证」中添加「移动和桌面应用」平台，填入重定向 URI `http://localhost`。插件登录时会使用临时端口。
+4. 在「API 权限」中添加 Microsoft Graph 的**委托权限** `Files.ReadWrite.AppFolder`。此权限让插件访问应用专用目录。
+5. 将「应用程序（客户端）ID」填入插件。只用个人 OneDrive 时，将「更多选项 → 微软登录目录」填为 `consumers`。同时支持个人和组织账号时保留 `common`。只支持组织账号时，可填该组织的租户 ID，或在应用支持多个组织时填 `organizations`。
+6. 点击「登录云盘并测试」，在浏览器中选择实际存放备份的 OneDrive 账号并完成授权，插件会自动测试连接。
 
 桌面应用不使用微软客户端密码。某些组织会禁止用户自行授予权限，此时需要组织管理员按其策略处理。
 
